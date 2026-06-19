@@ -4,7 +4,7 @@ import UnoCSS from '@unocss/vite';
 import { nip5aManifest } from '@napplet/vite-plugin';
 
 export default defineConfig({
-  plugins: [UnoCSS(), svelte(), nip5aManifest({ nappletType: 'livestream', requires: ['relay', 'ifc', 'player', 'resource'], artifactMode: 'single-file' })],
+  plugins: [UnoCSS(), svelte(), nip5aManifest({ nappletType: 'livestream', requires: ['relay', 'inc', 'media', 'resource', 'theme'], artifactMode: 'single-file' })],
   resolve: {
     dedupe: ['svelte'],
   },

@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "type-check": "tsc --noEmit",
-    "test": "vitest run"
+    "test": "vitest run",
+    "conformance": "pnpm build && napplet-conformance dist",
+    "test:conformance": "pnpm conformance"
   },
   "dependencies": {
     "@hyprgate/types": "workspace:*",
@@ -20,6 +22,8 @@
     "svelte": "^5.54.1"
   },
   "devDependencies": {
+    "@napplet/conformance": "^0.3.1",
+    "@napplet/conformance-cli": "^0.2.3",
     "@napplet/vite-plugin": "^0.9.0",
     "@sveltejs/vite-plugin-svelte": "^7.0.0",
     "@unocss/reset": "^66.6.7",

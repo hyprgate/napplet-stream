@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NAPPLET_PATH: napplets/stream
+  NAPPLET_PACKAGE: "@hyprgate/napp-stream"
+  NAPPLET_REF: '${{ github.event.pull_request.head.sha || github.sha }}'
+
+jobs:
+  conformance:
+    name: Conformance, unit tests, and build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout hyprgate workspace
+        uses: actions/checkout@v4
+        with:
+          repository: hyprgate/gui
+          path: hyprgate
+          submodules: false
+
+      - name: Use this napplet commit
+        working-directory: hyprgate
+        run: |
+          git config --global url."https://github.com/".insteadOf "git@github.com:"
+          git submodule update --init --recursive "$NAPPLET_PATH"
+          git -C "$NAPPLET_PATH" fetch origin "$NAPPLET_REF"
+          git -C "$NAPPLET_PATH" checkout --detach "$NAPPLET_REF"
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.32.1
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: hyprgate/pnpm-lock.yaml
+
+      - name: Install dependencies
+        working-directory: hyprgate
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Install Playwright browser
+        working-directory: hyprgate
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run conformance
+        working-directory: hyprgate
+        run: pnpm --filter "$NAPPLET_PACKAGE" conformance
+
+      - name: Run unit tests
+        working-directory: hyprgate
+        run: pnpm --filter "$NAPPLET_PACKAGE" test
+
+      - name: Build
+        working-directory: hyprgate
+        run: pnpm --filter "$NAPPLET_PACKAGE" build
