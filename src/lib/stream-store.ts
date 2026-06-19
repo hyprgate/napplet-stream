@@ -1,4 +1,4 @@
-// napps/stream/src/lib/stream-store.ts
+// napplets/stream/src/lib/stream-store.ts
 // Kind 30311 parsing and stream state management.
 // Pure TypeScript — no Svelte runes. Keep as .ts (not .svelte.ts) for vitest compatibility.
 

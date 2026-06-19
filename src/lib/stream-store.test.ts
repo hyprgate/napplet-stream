@@ -1,4 +1,4 @@
-// napps/stream/src/lib/stream-store.test.ts
+// napplets/stream/src/lib/stream-store.test.ts
 // TDD: RED phase — tests written before implementation
 
 import { describe, it, expect } from 'vitest';

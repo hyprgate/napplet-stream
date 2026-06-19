@@ -20,7 +20,7 @@ This document describes how to publish the hyprgate Stream napp as an nsite on n
 ## Section 1: Prerequisites
 
 1. **Node.js 18+** installed (`node --version`)
-2. **Napp built** — produces `napps/stream/dist/`:
+2. **Napp built** — produces `napplets/stream/dist/`:
    ```bash
    pnpm --filter @hyprgate/napp-stream build
    ```
@@ -60,7 +60,7 @@ per file. Each event maps the file path (`d` tag) to its SHA-256 hash (`x` tag).
 ### Command
 
 ```bash
-# Run from napps/stream/ directory (where .nsite/config.json lives)
+# Run from napplets/stream/ directory (where .nsite/config.json lives)
 # Step 1: Create symlink so nsite-cli can find the config
 ln -sf config.json .nsite/project.json
 # Step 2: Upload
@@ -198,7 +198,7 @@ When Stream napp source changes, re-publish:
 pnpm --filter @hyprgate/napp-stream build
 
 # 2. Re-upload (nsite-cli publishes replaceable events — same d tag supersedes old events)
-cd napps/stream && ln -sf config.json .nsite/project.json && npx nsite-cli@0.1.16 upload ./dist
+cd napplets/stream && ln -sf config.json .nsite/project.json && npx nsite-cli@0.1.16 upload ./dist
 
 # 3. If index.html hash changed, republish the kind 37348 event with the new url tag
 #    (copy the command from Section 3 with the updated sha256)
