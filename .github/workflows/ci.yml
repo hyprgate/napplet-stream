@@ -13,16 +13,24 @@ env:
   NAPPLET_PATH: napplets/stream
   NAPPLET_PACKAGE: "@hyprgate/napp-stream"
   NAPPLET_REF: '${{ github.event.pull_request.head.sha || github.sha }}'
+  PARENT_CHECKOUT_TOKEN: '${{ secrets.HYPRGATE_GUI_CHECKOUT_TOKEN }}'
 
 jobs:
   conformance:
     name: Conformance, unit tests, and build
     runs-on: ubuntu-latest
     steps:
+      - name: Require parent checkout token
+        if: ${{ env.PARENT_CHECKOUT_TOKEN == '' }}
+        run: |
+          echo "::error::Set HYPRGATE_GUI_CHECKOUT_TOKEN with read access to hyprgate/gui so this napplet repository can checkout the private parent workspace."
+          exit 1
+
       - name: Checkout hyprgate workspace
         uses: actions/checkout@v4
         with:
           repository: hyprgate/gui
+          token: ${{ env.PARENT_CHECKOUT_TOKEN }}
           path: hyprgate
           submodules: false
 
