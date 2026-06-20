@@ -1,2 +1,2 @@
-import { createHyprGateUnoConfig } from '@hyprgate/ui/uno-config';
+import { createHyprGateUnoConfig } from '@hyprgate/napplet-ui/uno-config';
 export default createHyprGateUnoConfig();
