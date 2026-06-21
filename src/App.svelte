@@ -86,7 +86,7 @@
         detail: candidate.tags.length > 0 ? candidate.tags.join(', ') : candidate.service || undefined,
         index,
         total,
-        ...(streamChatContext(candidate) ? { chat: streamChatContext(candidate) } : {}),
+        chat: streamChatContext(candidate),
       },
     }));
     const queueIndex = playable.findIndex((candidate) => candidate.id === stream.id);
@@ -98,7 +98,7 @@
         label: 'Live streams',
         detail: stream.tags.length > 0 ? stream.tags.join(', ') : stream.service || undefined,
         ...(queueIndex >= 0 ? { index: queueIndex, total } : {}),
-        ...(streamChatContext(stream) ? { chat: streamChatContext(stream) } : {}),
+        chat: streamChatContext(stream),
       },
       queue,
       queueIndex: queueIndex >= 0 ? queueIndex : undefined,
