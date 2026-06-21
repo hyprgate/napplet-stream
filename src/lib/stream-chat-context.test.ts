@@ -33,7 +33,7 @@ describe('streamChatContext', () => {
     });
   });
 
-  it('returns undefined when a stream has no chat relays', () => {
+  it('builds runtime chat context without relay hints when a stream has no chat relays', () => {
     const stream = parseKind30311(makeEvent([
       ['d', 'phase-94-stream'],
       ['title', 'Phase 94 Stream'],
@@ -41,6 +41,9 @@ describe('streamChatContext', () => {
       ['streaming', 'https://stream.example.test/live.m3u8'],
     ]))!;
 
-    expect(streamChatContext(stream)).toBeUndefined();
+    expect(streamChatContext(stream)).toEqual({
+      streamAddr: '30311:stream-publisher:phase-94-stream',
+      title: 'Phase 94 Stream',
+    });
   });
 });
