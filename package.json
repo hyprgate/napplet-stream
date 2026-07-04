@@ -14,9 +14,9 @@
     "test:conformance": "pnpm conformance"
   },
   "dependencies": {
-    "@hyprgate/napplet-ui": "0.0.1",
-    "@hyprgate/types": "0.0.1",
-    "@hyprgate/utils": "0.0.1",
+    "@hyprgate/napplet-ui": "workspace:*",
+    "@hyprgate/types": "workspace:*",
+    "@hyprgate/utils": "workspace:*",
     "@napplet/sdk": "0.23.0",
     "@napplet/shim": "0.26.1",
     "nostr-tools": "^2.23.3",
