@@ -148,7 +148,8 @@
   onMount(() => {
     sub = relay.subscribe(
       { kinds: [30311], limit: 100 },
-      (event) => {
+      (result) => {
+        const event = result.event as NostrEvent;
         const stream = parseKind30311(event);
         if (stream != null) {
           store.addStream(stream);
