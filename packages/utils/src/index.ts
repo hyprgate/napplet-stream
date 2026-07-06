@@ -17,6 +17,7 @@ export * from './pubkey-color.js';
 export * from './reading-queue-protocol.js';
 export * from './runtime-player.js';
 export * from './resource-client.js';
+export * from './runtime-applet-api.js';
 export * from './theme-client.js';
 export * from './workspace-journal-protocol.js';
 export * from './zaps.js';

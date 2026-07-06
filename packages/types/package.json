@@ -14,7 +14,7 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@kehto/acl": "^0.15.1"
+    "@kehto/acl": "^0.15.4"
   },
   "devDependencies": {
     "typescript": "^5.9.3",

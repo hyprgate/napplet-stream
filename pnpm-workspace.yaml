@@ -1,8 +1,8 @@
 packages:
   - 'packages/*'
 overrides:
-  '@napplet/core': 0.26.0
-  '@napplet/nap': 0.26.0
-  '@napplet/sdk': 0.23.0
-  '@napplet/shim': 0.26.1
+  '@napplet/core': 0.27.0
+  '@napplet/nap': 0.27.1
+  '@napplet/sdk': 0.24.1
+  '@napplet/shim': 0.26.3
   '@napplet/vite-plugin': 0.10.1
