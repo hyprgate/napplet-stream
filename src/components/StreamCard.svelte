@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onDestroy } from 'svelte';
   import { pubkeyColorStyle, resourceImage } from '@hyprgate/utils';
   import type { RuntimePlayerStatus } from '@hyprgate/utils';
   import type { LiveStream } from '../lib/stream-store';
@@ -21,6 +22,37 @@
     onselect,
   }: Props = $props();
 
+  const IMAGE_FALLBACK_DELAY_MS = 30_000;
+
+  let imageState = $state<'loading' | 'loaded' | 'fallback'>('fallback');
+  let fallbackTimeout: ReturnType<typeof setTimeout> | null = null;
+
+  function clearFallbackTimeout() {
+    if (fallbackTimeout == null) return;
+    clearTimeout(fallbackTimeout);
+    fallbackTimeout = null;
+  }
+
+  function resetImageState(image: string) {
+    clearFallbackTimeout();
+    if (!image) {
+      imageState = 'fallback';
+      return;
+    }
+
+    imageState = 'loading';
+    fallbackTimeout = setTimeout(() => {
+      if (imageState === 'loading') imageState = 'fallback';
+      fallbackTimeout = null;
+    }, IMAGE_FALLBACK_DELAY_MS);
+  }
+
+  $effect(() => {
+    resetImageState(stream.image);
+  });
+
+  onDestroy(clearFallbackTimeout);
+
   function truncatePubkey(pubkey: string): string {
     if (pubkey.length <= 16) return pubkey;
     return `${pubkey.slice(0, 8)}…${pubkey.slice(-4)}`;
@@ -38,6 +70,16 @@
       onselect?.(stream);
     }
   }
+
+  function handleImageLoad() {
+    clearFallbackTimeout();
+    imageState = 'loaded';
+  }
+
+  function handleImageError() {
+    clearFallbackTimeout();
+    imageState = 'fallback';
+  }
 </script>
 
 <div
@@ -53,17 +95,31 @@
 >
   <!-- Thumbnail -->
   <div class="relative aspect-video bg-gradient-to-br from-bg-base to-bg-surface overflow-hidden">
-    {#if stream.image}
+    {#if stream.image && imageState !== 'fallback'}
       <img
         use:resourceImage={stream.image}
         alt={stream.title}
-        class="w-full h-full object-cover"
-        onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }}
+        class="stream-thumbnail w-full h-full object-cover"
+        class:loaded={imageState === 'loaded'}
+        loading="lazy"
+        decoding="async"
+        data-stream-thumbnail
+        onload={handleImageLoad}
+        onerror={handleImageError}
       />
-    {:else}
-      <!-- Placeholder gradient with cypherpunk aesthetic -->
-      <div class="w-full h-full flex items-center justify-center bg-gradient-to-br from-accent-green/5 to-accent-green/20">
-        <span class="text-accent-green/40 text-2xl font-mono">▶</span>
+    {/if}
+
+    {#if imageState !== 'loaded'}
+      <div
+        class="stream-thumbnail-placeholder"
+        data-stream-thumbnail-placeholder
+        data-thumbnail-state={imageState}
+        aria-hidden="true"
+      >
+        <div class="stream-placeholder-mark">
+          <span></span>
+          <span></span>
+        </div>
       </div>
     {/if}
 
@@ -142,6 +198,49 @@
   .stream-card.disabled {
     cursor: wait;
     opacity: 0.75;
+  }
+
+  .stream-thumbnail {
+    opacity: 0;
+    transition: opacity 140ms ease;
+  }
+
+  .stream-thumbnail.loaded {
+    opacity: 1;
+  }
+
+  .stream-thumbnail-placeholder {
+    position: absolute;
+    inset: 0;
+    display: grid;
+    place-items: center;
+    background:
+      radial-gradient(circle at 50% 46%, color-mix(in srgb, var(--hg-text-muted, #7d8491) 8%, transparent), transparent 36%),
+      color-mix(in srgb, var(--hg-bg-surface, #151820) 94%, var(--hg-text-muted, #7d8491) 6%);
+  }
+
+  .stream-placeholder-mark {
+    position: relative;
+    width: 48px;
+    height: 30px;
+    opacity: 0.28;
+  }
+
+  .stream-placeholder-mark span {
+    position: absolute;
+    inset-inline: 0;
+    height: 9px;
+    border: 3px solid var(--hg-text-muted, #7d8491);
+    border-radius: 999px;
+    transform: skewX(-28deg) rotate(-8deg);
+  }
+
+  .stream-placeholder-mark span:first-child {
+    top: 2px;
+  }
+
+  .stream-placeholder-mark span:last-child {
+    bottom: 2px;
   }
 
   .media-state {

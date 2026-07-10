@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { NostrEvent } from '@hyprgate/types';
-import { nip19 } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
 import {
   KIND_NIP22_COMMENT,
   KIND_TEXT_NOTE,

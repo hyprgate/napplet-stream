@@ -10,7 +10,7 @@
 // createFeedBuilderStore) deliberately STAYS in the napp.
 
 import type { NostrEvent } from '@hyprgate/types';
-import type { Filter } from 'nostr-tools';
+import type { Filter } from 'nostr-tools/filter';
 import { decodeNfeed, decodeNfilter, decodeNfilters } from '@sandwichfarm/encoded-entities';
 
 /** Addressable event kind that stores a saved filter or feed. */

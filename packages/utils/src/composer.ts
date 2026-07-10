@@ -1,5 +1,5 @@
 import { relay, storage } from '@napplet/sdk';
-import { nip19 } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
 import { createKind1ReplyTags, KIND_TEXT_NOTE } from './note-viewer-protocol.js';
 
 export const COMPOSER_DRAFT_KEY = 'compose:draft' as const;

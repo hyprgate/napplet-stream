@@ -5,7 +5,7 @@ import {
   KIND_REACTION,
   KIND_REPOST,
 } from '@hyprgate/types';
-import { nip19 } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
 
 export const NOTE_VIEWER_OPEN_TOPIC = 'note:open' as const;
 export const NOTE_VIEWER_READY_TOPIC = 'note:ready' as const;

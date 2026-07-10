@@ -8,14 +8,13 @@
    */
   import {
     parseNoteContent,
-    pubkeyColorStyle,
-    requestRuntimePlayback,
     resolveExternalVideoEmbed,
-    resourceImage,
-    resourceImageBatch,
     shouldInterceptLinkClick,
     type NoteContentBlock,
-  } from '@hyprgate/utils';
+  } from '@hyprgate/utils/note-content';
+  import { pubkeyColorStyle } from '@hyprgate/utils/pubkey-color';
+  import { requestRuntimePlayback } from '@hyprgate/utils/runtime-player';
+  import { resourceImage, resourceImageBatch } from '@hyprgate/utils/resource-client';
 
   interface Props {
     content: string;

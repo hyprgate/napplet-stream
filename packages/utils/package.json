@@ -8,6 +8,38 @@
       "types": "./src/index.ts",
       "default": "./src/index.ts"
     },
+    "./note-content": {
+      "types": "./src/note-content.ts",
+      "default": "./src/note-content.ts"
+    },
+    "./pubkey-color": {
+      "types": "./src/pubkey-color.ts",
+      "default": "./src/pubkey-color.ts"
+    },
+    "./resource-client": {
+      "types": "./src/resource-client.ts",
+      "default": "./src/resource-client.ts"
+    },
+    "./runtime-player": {
+      "types": "./src/runtime-player.ts",
+      "default": "./src/runtime-player.ts"
+    },
+    "./identity-client": {
+      "types": "./src/identity-client.ts",
+      "default": "./src/identity-client.ts"
+    },
+    "./nub-topics": {
+      "types": "./src/nub-topics.ts",
+      "default": "./src/nub-topics.ts"
+    },
+    "./theme-client": {
+      "types": "./src/theme-client.ts",
+      "default": "./src/theme-client.ts"
+    },
+    "./note-viewer-protocol": {
+      "types": "./src/note-viewer-protocol.ts",
+      "default": "./src/note-viewer-protocol.ts"
+    },
     "./emoji-sets": {
       "types": "./src/emoji-sets.ts",
       "default": "./src/emoji-sets.ts"

@@ -2,7 +2,7 @@
 // Kind 30311 parsing and stream state management.
 // Pure TypeScript — no Svelte runes. Keep as .ts (not .svelte.ts) for vitest compatibility.
 
-import type { NostrEvent } from 'nostr-tools';
+import type { NostrEvent } from 'nostr-tools/core';
 
 export interface LiveStream {
   id: string;
@@ -118,9 +118,9 @@ export function createStreamStore(): StreamStore {
   const streams = new Map<string, LiveStream>();
   let loading = true;
 
-  function removeOlderStreamFromSamePublisher(next: LiveStream): boolean {
+  function removeOlderEventForSameStream(next: LiveStream): boolean {
     for (const [id, current] of streams) {
-      if (current.event.pubkey !== next.event.pubkey) continue;
+      if (current.streamAddr !== next.streamAddr) continue;
       if (current.createdAt >= next.createdAt) return false;
       streams.delete(id);
     }
@@ -135,7 +135,7 @@ export function createStreamStore(): StreamStore {
       return loading;
     },
     addStream(s: LiveStream): void {
-      if (!removeOlderStreamFromSamePublisher(s)) return;
+      if (!removeOlderEventForSameStream(s)) return;
       streams.set(s.id, s);
     },
     removeStream(id: string): void {

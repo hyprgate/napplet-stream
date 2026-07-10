@@ -8,7 +8,7 @@
 // null (never throws) on malformed input.
 
 import { describe, it, expect } from 'vitest';
-import type { Filter } from 'nostr-tools';
+import type { Filter } from 'nostr-tools/filter';
 import type { NostrEvent } from '@hyprgate/types';
 import {
   encodeNfeed,

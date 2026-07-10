@@ -2,7 +2,7 @@
 // Shared reader for the NIP-89 `client` tag on a Nostr event.
 
 import type { NostrEvent } from '@hyprgate/types';
-import { nip19 } from 'nostr-tools';
+import * as nip19 from 'nostr-tools/nip19';
 
 export const HYPRGATE_CLIENT_NAME = 'hyprgate';
 

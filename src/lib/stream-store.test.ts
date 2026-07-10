@@ -2,7 +2,7 @@
 // TDD: RED phase — tests written before implementation
 
 import { describe, it, expect } from 'vitest';
-import type { NostrEvent } from 'nostr-tools';
+import type { NostrEvent } from 'nostr-tools/core';
 import { parseKind30311, createStreamStore } from './stream-store';
 
 // ─── Test helpers ──────────────────────────────────────────────────────────────
@@ -214,46 +214,47 @@ describe('createStreamStore', () => {
     expect(store.streams.size).toBe(1);
   });
 
-  it('addStream keeps only the newest stream event for each publisher pubkey', () => {
+  it('addStream keeps different streams from the same publisher pubkey', () => {
     const store = createStreamStore();
-    const oldStream = parseKind30311(makeEvent({
-      id: 'old-event',
+    const firstStream = parseKind30311(makeEvent({
+      id: 'first-event',
       pubkey: 'same-publisher',
       created_at: 1700000000,
       tags: makeTags({
-        'd': 'old-stream-id',
-        'title': 'Older Stream',
+        'd': 'first-stream-id',
+        'title': 'First Stream',
         'status': 'live',
-        'streaming': 'https://example.com/old.m3u8',
+        'streaming': 'https://example.com/first.m3u8',
       }),
     }))!;
-    const newStream = parseKind30311(makeEvent({
-      id: 'new-event',
+    const secondStream = parseKind30311(makeEvent({
+      id: 'second-event',
       pubkey: 'same-publisher',
       created_at: 1700000060,
       tags: makeTags({
-        'd': 'new-stream-id',
-        'title': 'Newer Stream',
+        'd': 'second-stream-id',
+        'title': 'Second Stream',
         'status': 'live',
-        'streaming': 'https://example.com/new.m3u8',
+        'streaming': 'https://example.com/second.m3u8',
       }),
     }))!;
 
-    store.addStream(oldStream);
-    store.addStream(newStream);
+    store.addStream(firstStream);
+    store.addStream(secondStream);
 
-    expect(store.getStreams()).toEqual([newStream]);
-    expect(store.streams.has(oldStream.id)).toBe(false);
+    expect(store.getStreams()).toEqual([secondStream, firstStream]);
+    expect(store.streams.has(firstStream.id)).toBe(true);
+    expect(store.streams.has(secondStream.id)).toBe(true);
   });
 
-  it('addStream ignores older refreshes from a publisher that already has a newer stream', () => {
+  it('addStream ignores older refreshes for the same stream address', () => {
     const store = createStreamStore();
     const newest = parseKind30311(makeEvent({
       id: 'newest-event',
       pubkey: 'same-publisher',
       created_at: 1700000060,
       tags: makeTags({
-        'd': 'newest-stream-id',
+        'd': 'same-stream-id',
         'title': 'Newest Stream',
         'status': 'live',
         'streaming': 'https://example.com/newest.m3u8',
@@ -264,7 +265,7 @@ describe('createStreamStore', () => {
       pubkey: 'same-publisher',
       created_at: 1700000000,
       tags: makeTags({
-        'd': 'stale-stream-id',
+        'd': 'same-stream-id',
         'title': 'Stale Stream',
         'status': 'live',
         'streaming': 'https://example.com/stale.m3u8',

@@ -120,6 +120,11 @@
     ));
   }
 
+  function markLoadComplete(): void {
+    store.setLoading(false);
+    notifyUpdate();
+  }
+
   async function toggleActiveStreamPlayback(): Promise<void> {
     if (!runtimeSessionId) return;
     const action = runtimeState === 'playing' || runtimeState === 'loading' ? 'pause' : 'play';
@@ -146,32 +151,39 @@
 
   // ── Initialize on mount ────────────────────────────────────────────────────
   onMount(() => {
-    sub = relay.subscribe(
-      { kinds: [30311], limit: 100 },
-      (result) => {
-        const event = result.event as NostrEvent;
-        const stream = parseKind30311(event);
-        if (stream != null) {
-          store.addStream(stream);
-          notifyUpdate();
-        }
-      },
-      () => {
-        store.setLoading(false);
-        notifyUpdate();
-      },
-    );
+    try {
+      sub = relay.subscribe(
+        { kinds: [30311], limit: 100 },
+        (result) => {
+          const event = result.event as NostrEvent;
+          const stream = parseKind30311(event);
+          if (stream != null) {
+            store.addStream(stream);
+            notifyUpdate();
+          }
+        },
+        markLoadComplete,
+      );
+    } catch (error) {
+      console.warn('[livestream] relay.subscribe failed', error);
+      markLoadComplete();
+    }
+
     // Pull-on-mount responder: chat napp requests current stream context (D-18, Pitfall 6)
-    contextSub = ipc.on('stream:current-context-get', (payload) => {
-      ipc.emit('stream:current-context', [], JSON.stringify(
-        createStreamCurrentContextPayload(
-          selectedStream
-            ? { streamAddr: selectedStream.streamAddr, title: selectedStream.title, chatRelays: selectedStream.chatRelays }
-            : { streamAddr: null, title: null, chatRelays: [] },
-          payload,
-        ),
-      ));
-    });
+    try {
+      contextSub = ipc.on('stream:current-context-get', (payload) => {
+        ipc.emit('stream:current-context', [], JSON.stringify(
+          createStreamCurrentContextPayload(
+            selectedStream
+              ? { streamAddr: selectedStream.streamAddr, title: selectedStream.title, chatRelays: selectedStream.chatRelays }
+              : { streamAddr: null, title: null, chatRelays: [] },
+            payload,
+          ),
+        ));
+      });
+    } catch (error) {
+      console.warn('[livestream] stream context responder unavailable', error);
+    }
   });
 
   // ── Cleanup on destroy ─────────────────────────────────────────────────────
