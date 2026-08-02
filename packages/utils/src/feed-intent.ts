@@ -7,7 +7,15 @@
 // UNTRUSTED (NAP-INTENT §Security, threat T-88-04): validateFeedIntentPayload
 // rejects malformed/oversized input before it ever reaches a subscription.
 
-import type { FeedIntentOrigin, FeedIntentPayload, NostrFilter } from '@hyprgate/types';
+import type {
+  FeedIntentOrigin,
+  FeedIntentPayload,
+  IntentRequest,
+  IntentRequestOptions,
+  NostrFilter,
+} from '@hyprgate/types';
+import { createIntentRequest } from '@hyprgate/types';
+import { parseProfileOpenPayload, type ProfileOpenPayload } from './nub-topics.js';
 
 export type { FeedIntentOrigin, FeedIntentPayload } from '@hyprgate/types';
 
@@ -30,6 +38,39 @@ export interface SavedEntityInput {
   filters: NostrFilter[];
   relays: string[];
   address?: string;
+}
+
+/** Optional request selectors shared by the feed and profile builders. */
+export type IntentRequestBuilderOptions = IntentRequestOptions;
+
+/** Build an action-optional profile request from a canonical profile identity. */
+export function createProfileIntentRequest(
+  payload: unknown,
+  options: IntentRequestBuilderOptions = {},
+): IntentRequest | null {
+  const profile = parseProfileOpenPayload(payload);
+  return profile ? buildIntentRequest('profile', profile, options) : null;
+}
+
+/** Build an action-optional feed request from the existing validated feed payload. */
+export function createFeedIntentRequest(
+  payload: unknown,
+  options: IntentRequestBuilderOptions = {},
+): IntentRequest | null {
+  const feed = validateFeedIntentPayload(payload);
+  return feed ? buildIntentRequest('feed', feed, options) : null;
+}
+
+function buildIntentRequest(
+  archetype: string,
+  payload: FeedIntentPayload | ProfileOpenPayload,
+  options: IntentRequestBuilderOptions,
+): IntentRequest | null {
+  return createIntentRequest({
+    archetype,
+    ...options,
+    payload,
+  });
 }
 
 /** Drop `limit` and clone known filter values so Svelte proxies never cross postMessage. */

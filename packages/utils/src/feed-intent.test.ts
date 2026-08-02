@@ -1,11 +1,14 @@
 import { describe, expect, it } from 'vitest';
 import {
+  createFeedIntentRequest,
+  createProfileIntentRequest,
   MAX_FEED_FILTERS,
   MAX_FEED_RELAYS,
   nfeedToFeedPayload,
   validateFeedIntentPayload,
   type SavedEntityInput,
 } from './feed-intent.js';
+import type { IntentRequest as PublicIntentRequest } from '@napplet/nap/intent';
 
 function nfeedEntity(over: Partial<SavedEntityInput> = {}): SavedEntityInput {
   return {
@@ -72,6 +75,47 @@ describe('nfeedToFeedPayload', () => {
 
     expect(() => structuredClone(payload)).not.toThrow();
     expect(payload.filters).toEqual([{ kinds: [1] }]);
+  });
+});
+
+describe('canonical feed and profile intent requests', () => {
+  it('builds a typed profile request without inventing an action', () => {
+    const request = createProfileIntentRequest(
+      { pubkey: 'a'.repeat(64) },
+      { convention: 'napplet:document/open', behavior: { newWindow: true } },
+    );
+
+    expect(request).toEqual({
+      archetype: 'profile',
+      convention: 'napplet:document/open',
+      payload: { pubkey: 'a'.repeat(64) },
+      behavior: { newWindow: true },
+    });
+    expect(request).not.toHaveProperty('action');
+
+    const publicRequest: PublicIntentRequest = request!;
+    expect(publicRequest.archetype).toBe('profile');
+  });
+
+  it('builds a feed request from the existing validated payload and only includes requested dimensions', () => {
+    const request = createFeedIntentRequest(
+      { filters: [{ kinds: [1] }], origin: 'outbox' },
+      { action: 'refresh', handler: 'feed-handler' },
+    );
+
+    expect(request).toEqual({
+      archetype: 'feed',
+      action: 'refresh',
+      handler: 'feed-handler',
+      payload: { filters: [{ kinds: [1] }], origin: 'outbox' },
+    });
+  });
+
+  it('rejects malformed request identity, selectors, and payloads', () => {
+    expect(createProfileIntentRequest({ pubkey: 'A'.repeat(64) })).toBeNull();
+    expect(createProfileIntentRequest({ pubkey: 'a'.repeat(64) }, { convention: 'profile:open' })).toBeNull();
+    expect(createFeedIntentRequest({ filters: [], origin: 'outbox' })).toBeNull();
+    expect(createFeedIntentRequest({ filters: [{ kinds: [1] }], origin: 'outbox' }, { action: '' })).toBeNull();
   });
 });
 

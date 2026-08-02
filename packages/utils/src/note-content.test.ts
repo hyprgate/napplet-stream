@@ -6,6 +6,7 @@ import {
   parseCustomEmojiTags,
   parseNoteContent,
   resolveExternalVideoEmbed,
+  resolveYoutubeVideo,
   shouldInterceptLinkClick,
   type LinkClickIntent,
 } from './note-content.js';
@@ -112,25 +113,70 @@ describe('note content parsing', () => {
   });
 
   it('recognizes third-party video provider URLs as video embeds', () => {
-    expect(parseNoteContent('watch https://youtu.be/abc123')).toContainEqual({
+    const videoId = 'M7lc1UVf-VE';
+    expect(parseNoteContent(`watch https://youtu.be/${videoId}`)).toContainEqual({
       type: 'media',
       mediaType: 'video',
-      value: 'https://youtu.be/abc123',
-      source: 'https://youtu.be/abc123',
+      value: `https://youtu.be/${videoId}`,
+      source: `https://youtu.be/${videoId}`,
     });
     expect(extractNoteContentEmbeds('https://vimeo.com/123456 https://rumble.com/vabcde-title.html')).toEqual([
       { type: 'media', mediaType: 'video', value: 'https://vimeo.com/123456', source: 'https://vimeo.com/123456' },
       { type: 'media', mediaType: 'video', value: 'https://rumble.com/vabcde-title.html', source: 'https://rumble.com/vabcde-title.html' },
     ]);
-    expect(resolveExternalVideoEmbed('https://www.youtube.com/watch?v=abc123')).toEqual({
+    expect(resolveExternalVideoEmbed(`https://www.youtube.com/watch?v=${videoId}`)).toEqual({
       provider: 'youtube',
-      embedUrl: 'https://www.youtube-nocookie.com/embed/abc123',
-      thumbnailUrl: 'https://i.ytimg.com/vi/abc123/hqdefault.jpg',
+      embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}`,
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
     });
     expect(resolveExternalVideoEmbed('https://rumble.com/vabcde-title.html')).toEqual({
       provider: 'rumble',
       embedUrl: 'https://rumble.com/embed/vabcde/',
     });
+  });
+
+  it('recognizes only validated single-video YouTube URLs and preserves valid offsets', () => {
+    const videoId = 'M7lc1UVf-VE';
+    const accepted = [
+      [`https://youtu.be/${videoId}`, null],
+      [`https://www.youtube.com/watch?v=${videoId}`, null],
+      [`https://m.youtube.com/watch?v=${videoId}&list=ignored`, null],
+      [`https://youtube.com/shorts/${videoId}?t=1m30s`, 90],
+      [`https://www.youtube.com/embed/${videoId}?start=42`, 42],
+      [`https://youtu.be/${videoId}#t=2m`, 120],
+      [`https://youtube.com/watch?v=${videoId}&t=90&start=12`, 12],
+    ] as const;
+
+    for (const [url, startSeconds] of accepted) {
+      expect(resolveYoutubeVideo(url)).toMatchObject({ videoId, startSeconds });
+    }
+
+    expect(resolveExternalVideoEmbed(`https://youtube.com/watch?v=${videoId}&t=15`)).toEqual({
+      provider: 'youtube',
+      embedUrl: `https://www.youtube-nocookie.com/embed/${videoId}?start=15`,
+      thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+    });
+  });
+
+  it('keeps malformed, lookalike, and non-video YouTube URLs out of the player classifier', () => {
+    const videoId = 'M7lc1UVf-VE';
+    const rejected = [
+      `http://youtu.be/${videoId}`,
+      `https://youtu.be/${videoId}/extra`,
+      'https://youtube.com/watch?v=too-short',
+      `https://youtube.com/channel/${videoId}`,
+      'https://youtube.com/results?search_query=video',
+      `https://youtube.com/playlist?list=PL${videoId}`,
+      `https://youtube.com/clip/${videoId}`,
+      `https://youtube.com/live/${videoId}`,
+      `https://music.youtube.com/watch?v=${videoId}`,
+      `https://youtube.com:444/watch?v=${videoId}`,
+      `https://youtube.com.evil.example/watch?v=${videoId}`,
+      `https://notyoutube.com/watch?v=${videoId}`,
+      `https://youtube.com/other?v=${videoId}`,
+    ];
+
+    for (const url of rejected) expect(resolveYoutubeVideo(url)).toBeNull();
   });
 
   it('can skip inline image URLs and Blossom resources when extracting secondary embeds', () => {

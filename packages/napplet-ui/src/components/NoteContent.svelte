@@ -32,6 +32,7 @@
     onOpenLink?: (url: string) => boolean | Promise<boolean>;
     detectExternalVideo?: boolean;
     resourceBatchSize?: number;
+    loadResources?: boolean;
     videoTitle?: string;
   }
 
@@ -44,10 +45,17 @@
     onOpenLink,
     detectExternalVideo = true,
     resourceBatchSize,
+    loadResources = true,
     videoTitle = 'Note video',
   }: Props = $props();
 
   const blocks = $derived(parseNoteContent(content, { emojiTags }));
+  let loadedResourceSources = $state(new Set<string>());
+
+  function markResourceLoaded(source: string): void {
+    if (loadedResourceSources.has(source)) return;
+    loadedResourceSources = new Set(loadedResourceSources).add(source);
+  }
 
   function shortPubkey(pubkey: string): string {
     return pubkey.length > 12 ? `${pubkey.slice(0, 8)}...` : pubkey;
@@ -158,11 +166,25 @@
     {:else if block.type === 'url'}
       <a class="ref" href={block.value} target="_blank" rel="noopener noreferrer" onclick={(e) => void handleUrlClick(e, block.value)}>{block.value}</a>
     {:else if block.type === 'emoji'}
-      <img class="custom-emoji" use:noteResourceImage={block.imageUrl} alt={block.source} title={block.source} loading="lazy" />
+      <img class="custom-emoji" use:noteResourceImage={loadResources ? block.imageUrl : null} alt={block.source} title={block.source} loading="lazy" />
     {:else if block.type === 'media' && block.mediaType === 'image'}
-      <img class="media" use:noteResourceImage={block.value} alt={mediaAlt(block)} loading="lazy" />
+      <img
+        class="media"
+        class:resource-pending={!loadedResourceSources.has(block.value)}
+        use:noteResourceImage={loadResources ? block.value : null}
+        alt={mediaAlt(block)}
+        loading="lazy"
+        onload={() => markResourceLoaded(block.value)}
+      />
     {:else if block.type === 'resource'}
-      <img class="media" use:noteResourceImage={block.value} alt={mediaAlt(block)} loading="lazy" />
+      <img
+        class="media"
+        class:resource-pending={!loadedResourceSources.has(block.value)}
+        use:noteResourceImage={loadResources ? block.value : null}
+        alt={mediaAlt(block)}
+        loading="lazy"
+        onload={() => markResourceLoaded(block.value)}
+      />
     {:else if block.type === 'media' && block.mediaType === 'video'}
       <button type="button" class="ref" onclick={() => void playVideo(block.value)}>[video]</button>
     {/if}
@@ -208,6 +230,12 @@
     object-fit: contain;
     border-radius: 4px;
     margin: 8px 0 0;
+  }
+
+  .media.resource-pending {
+    width: min(100%, 640px);
+    aspect-ratio: 16 / 9;
+    background: var(--hg-surface, #101010);
   }
 
   .custom-emoji {

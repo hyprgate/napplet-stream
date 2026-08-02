@@ -14,7 +14,7 @@ export const KIND_NSITE_MANIFEST = 34128;
 /** Kind for a path-to-hash manifest (nsite index). Unconfirmed — may change when spec finalizes. */
 export const KIND_NSITE_INDEX = 35128;
 
-/** Kind for an app listing event (napp directory entry). */
+/** Historical kind for an old napp directory entry; do not use for new App Store listings by inertia. */
 export const KIND_NAPP_LISTING = 37348;
 
 /** Kind 0: user metadata. */
@@ -112,5 +112,23 @@ export const KIND_EMOJI_SETS = 30030;
 /** Kind 30063: NIP-51 release-artifact sets. */
 export const KIND_RELEASE_ARTIFACT_SETS = 30063;
 
+/** Kind 30078: NIP-78 application-specific data. */
+export const KIND_APPLICATION_DATA = 30078;
+
+/** Kind 30267: NIP-51 App curation set. */
+export const KIND_APP_CURATION_SET = 30267;
+
+/** Kind 32267: registry-listed Software Application with Hyprgate draft App Store listing schema. */
+export const KIND_SOFTWARE_APPLICATION = 32267;
+
 /** Kind 39089: NIP-51 starter pack / follow pack. */
 export const KIND_FOLLOW_PACK = 39089;
+
+/** Kind 5129: NIP-5D snapshot app event reference. */
+export const KIND_NIP5D_SNAPSHOT = 5129;
+
+/** Kind 15129: NIP-5D root app event reference. */
+export const KIND_NIP5D_ROOT = 15129;
+
+/** Kind 35129: NIP-5D named app event reference. */
+export const KIND_NIP5D_NAMED = 35129;

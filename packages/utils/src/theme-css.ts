@@ -1,5 +1,13 @@
 import type { Theme, ThemeFont } from '@napplet/nap/theme/types';
-import { mixColor, rgbaColor, rgbChannels } from './theme-color.js';
+import {
+  compositeSrgb,
+  contrastRatio,
+  ensureContrast,
+  ensureContrastAcross,
+  mixColor,
+  rgbaColor,
+  rgbChannels,
+} from './theme-color.js';
 import { isSafeImageUrl, normalizeBuiltInTheme } from './theme-normalize.js';
 import {
   BUILT_IN_THEME_CSS_TOKENS,
@@ -31,6 +39,22 @@ export function deriveBuiltInThemeCssVariables(theme: Theme): BuiltInThemeCssVar
   const textSecondary = mixColor(background, text, 0.78);
   const textMuted = mixColor(background, text, 0.58);
   const textDim = mixColor(background, text, 0.42);
+  const surfaceWash = compositeSrgb(surface, background, 0.60);
+  const backgrounds = [background, surfaceWash];
+  const contrastSafe = (candidate: string): string => (
+    ensureContrastAcross(candidate, backgrounds, 4.5) ?? ensureContrast(candidate, background, 4.5)
+  );
+  const safeText = contrastSafe(text);
+  const safeTextSecondary = contrastSafe(textSecondary);
+  const safeTextMuted = contrastSafe(textMuted);
+  const safeTextDim = contrastSafe(textDim);
+  const safePrimary = contrastSafe(primary);
+  const safeWarning = contrastSafe('#d6ae68');
+  const safeDanger = contrastSafe('#d7797d');
+  const selectionBackground = contrastRatio(safePrimary, background) >= 3
+    ? safePrimary
+    : ensureContrast(safePrimary, background, 3);
+  const selectionText = ensureContrast('#000000', selectionBackground, 4.5);
 
   return {
     '--hg-theme-background': background,
@@ -53,31 +77,34 @@ export function deriveBuiltInThemeCssVariables(theme: Theme): BuiltInThemeCssVar
     '--hg-border-muted': borderDim,
     '--hg-border-default-rgb': rgbChannels(border),
     '--hg-border-muted-rgb': rgbChannels(borderDim),
-    '--hg-border-accent': rgbaColor(primary, 0.5),
-    '--hg-window-border-active': rgbaColor(primary, 0.72),
+    '--hg-border-accent': rgbaColor(safePrimary, 0.5),
+    '--hg-window-border-active': rgbaColor(safePrimary, 0.72),
     '--hg-window-border-inactive': rgbaColor(text, 0.12),
-    '--hg-accent': primary,
-    '--hg-accent-primary': primary,
-    '--hg-accent-primary-rgb': rgbChannels(primary),
-    '--hg-accent-green': primary,
-    '--hg-accent-cyan': primary,
-    '--hg-accent-warning': '#d6ae68',
-    '--hg-accent-warning-rgb': '214 174 104',
-    '--hg-accent-yellow': '#d6ae68',
-    '--hg-warn': '#d6ae68',
-    '--hg-accent-danger': '#d7797d',
-    '--hg-accent-danger-rgb': '215 121 125',
-    '--hg-accent-red': '#d7797d',
-    '--hg-danger': '#d7797d',
-    '--hg-text': text,
-    '--hg-text-primary': text,
-    '--hg-text-primary-rgb': rgbChannels(text),
-    '--hg-text-secondary': textSecondary,
-    '--hg-text-secondary-rgb': rgbChannels(textSecondary),
-    '--hg-text-muted': textMuted,
-    '--hg-text-muted-rgb': rgbChannels(textMuted),
-    '--hg-text-dim': textDim,
-    '--hg-text-dim-rgb': rgbChannels(textDim),
+    '--hg-accent': safePrimary,
+    '--hg-accent-primary': safePrimary,
+    '--hg-accent-primary-rgb': rgbChannels(safePrimary),
+    '--hg-accent-success': safePrimary,
+    '--hg-terminal-selection-bg': selectionBackground,
+    '--hg-terminal-selection-text': selectionText,
+    '--hg-accent-green': safePrimary,
+    '--hg-accent-cyan': safePrimary,
+    '--hg-accent-warning': safeWarning,
+    '--hg-accent-warning-rgb': rgbChannels(safeWarning),
+    '--hg-accent-yellow': safeWarning,
+    '--hg-warn': safeWarning,
+    '--hg-accent-danger': safeDanger,
+    '--hg-accent-danger-rgb': rgbChannels(safeDanger),
+    '--hg-accent-red': safeDanger,
+    '--hg-danger': safeDanger,
+    '--hg-text': safeText,
+    '--hg-text-primary': safeText,
+    '--hg-text-primary-rgb': rgbChannels(safeText),
+    '--hg-text-secondary': safeTextSecondary,
+    '--hg-text-secondary-rgb': rgbChannels(safeTextSecondary),
+    '--hg-text-muted': safeTextMuted,
+    '--hg-text-muted-rgb': rgbChannels(safeTextMuted),
+    '--hg-text-dim': safeTextDim,
+    '--hg-text-dim-rgb': rgbChannels(safeTextDim),
     '--hg-font-body': fontStackFor(safeTheme.fonts?.body, DEFAULT_BODY_FONT_STACK),
     '--hg-font-title': fontStackFor(
       safeTheme.fonts?.title ?? safeTheme.fonts?.body,
@@ -90,14 +117,14 @@ export function deriveBuiltInThemeCssVariables(theme: Theme): BuiltInThemeCssVar
     '--un-color-border': border,
     '--un-color-border-default': border,
     '--un-color-border-dim': borderDim,
-    '--un-color-accent-green': primary,
-    '--un-color-accent-cyan': primary,
-    '--un-color-accent-amber': '#d6ae68',
-    '--un-color-accent-red': '#d7797d',
-    '--un-color-text-primary': text,
-    '--un-color-text-secondary': textSecondary,
-    '--un-color-text-muted': textMuted,
-    '--un-color-text-dim': textDim,
+    '--un-color-accent-green': safePrimary,
+    '--un-color-accent-cyan': safePrimary,
+    '--un-color-accent-amber': safeWarning,
+    '--un-color-accent-red': safeDanger,
+    '--un-color-text-primary': safeText,
+    '--un-color-text-secondary': safeTextSecondary,
+    '--un-color-text-muted': safeTextMuted,
+    '--un-color-text-dim': safeTextDim,
   };
 }
 

@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
+  BUILT_IN_THEME_CSS_TOKENS,
   BUILT_IN_THEME_FALLBACK,
   BUILT_IN_THEME_STYLE_ELEMENT_ID,
   applyBuiltInTheme,
@@ -10,7 +11,43 @@ import {
   requestBuiltInTheme,
   type BuiltInThemeSnapshot,
 } from './theme-client.js';
+import { ensureContrastAcross } from './theme-color.js';
 import type { Theme } from '@napplet/nap/theme/types';
+
+const TERMINAL_THEME_TOKENS = [
+  '--hg-accent-success',
+  '--hg-terminal-selection-bg',
+  '--hg-terminal-selection-text',
+] as const;
+
+function testRgb(hex: string): [number, number, number] {
+  return [
+    Number.parseInt(hex.slice(1, 3), 16),
+    Number.parseInt(hex.slice(3, 5), 16),
+    Number.parseInt(hex.slice(5, 7), 16),
+  ];
+}
+
+function testComposite(foreground: string, background: string, alpha: number): string {
+  const fg = testRgb(foreground);
+  const bg = testRgb(background);
+  const channels = fg.map((channel, index) => Math.round(channel * alpha + bg[index]! * (1 - alpha)));
+  return `#${channels.map(channel => channel.toString(16).padStart(2, '0')).join('')}`;
+}
+
+function testLuminance(hex: string): number {
+  const channels = testRgb(hex).map(channel => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  return channels[0]! * 0.2126 + channels[1]! * 0.7152 + channels[2]! * 0.0722;
+}
+
+function testContrast(left: string, right: string): number {
+  const first = testLuminance(left);
+  const second = testLuminance(right);
+  return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+}
 
 const serviceTheme: Theme = {
   title: 'Service Theme',
@@ -128,6 +165,59 @@ describe('deriveBuiltInThemeCssVariables', () => {
     expect(variables['--un-color-bg-base']).toBe('#20242f');
   });
 
+  it('registers exactly the three approved terminal tokens and derives every fixed token', () => {
+    expect(BUILT_IN_THEME_CSS_TOKENS.filter(token => (
+      token.includes('terminal-selection') || token === '--hg-accent-success'
+    ))).toEqual(TERMINAL_THEME_TOKENS);
+
+    const variables = deriveBuiltInThemeCssVariables(BUILT_IN_THEME_FALLBACK);
+    for (const token of BUILT_IN_THEME_CSS_TOKENS) {
+      expect(variables[token], token).toEqual(expect.any(String));
+      expect(variables[token].length, token).toBeGreaterThan(0);
+    }
+  });
+
+  it.each([
+    ['fallback', BUILT_IN_THEME_FALLBACK],
+    ['white-on-white', {
+      colors: { background: '#ffffff', text: '#ffffff', primary: '#ffffff' },
+    } satisfies Theme],
+    ['black-on-black', {
+      colors: { background: '#000000', text: '#000000', primary: '#000000' },
+    } satisfies Theme],
+  ])('meets base, exact composited-wash, and selection contrast for %s', (_name, theme) => {
+    const variables = deriveBuiltInThemeCssVariables(theme);
+    const base = variables['--hg-bg-base'];
+    const surfaceWash = testComposite(variables['--hg-bg-surface'], base, 0.60);
+    for (const token of [
+      '--hg-text-primary',
+      '--hg-text-secondary',
+      '--hg-text-muted',
+      '--hg-text-dim',
+      '--hg-accent-primary',
+      '--hg-accent-success',
+      '--hg-accent-warning',
+      '--hg-accent-danger',
+    ] as const) {
+      expect(testContrast(variables[token], base), `${token} on base`).toBeGreaterThanOrEqual(4.5);
+      expect(testContrast(variables[token], surfaceWash), `${token} on surface wash`)
+        .toBeGreaterThanOrEqual(4.5);
+    }
+    const selectionBackground = variables['--hg-terminal-selection-bg'];
+    const selectionText = variables['--hg-terminal-selection-text'];
+    expect(testContrast(selectionBackground, base)).toBeGreaterThanOrEqual(3);
+    expect(testContrast(selectionText, selectionBackground)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  it('preserves passing candidates and exposes fail-closed wash omission', () => {
+    const variables = deriveBuiltInThemeCssVariables(serviceTheme);
+    expect(variables['--hg-accent-primary']).toBe('#8ab17d');
+    expect(variables['--hg-accent-success']).toBe('#8ab17d');
+    expect(variables['--hg-accent-warning']).toBe('#d6ae68');
+    expect(variables['--hg-accent-danger']).toBe('#d7797d');
+    expect(ensureContrastAcross('#777777', ['#000000', '#ffffff'], 4.5)).toBeNull();
+  });
+
   it('maps Theme.background to safe CSS background tokens', () => {
     const variables = deriveBuiltInThemeCssVariables(backgroundTheme);
 
@@ -145,6 +235,9 @@ describe('applyBuiltInTheme', () => {
     expect(normalized).toEqual(serviceTheme);
     expect(document.documentElement.style.getPropertyValue('--hg-theme-background')).toBe('#20242f');
     expect(document.documentElement.style.getPropertyValue('--hg-accent-primary')).toBe('#8ab17d');
+    for (const token of TERMINAL_THEME_TOKENS) {
+      expect(document.documentElement.style.getPropertyValue(token), token).not.toBe('');
+    }
     expect(document.documentElement.dataset.hgThemeClient).toBe('active');
     expect(document.getElementById(BUILT_IN_THEME_STYLE_ELEMENT_ID)?.textContent).toContain('.bg-bg-base');
   });
@@ -300,6 +393,10 @@ describe('installBuiltInThemeClient', () => {
       onThemeApplied: (snapshot) => snapshots.push(snapshot),
     });
     const styleElement = document.getElementById(BUILT_IN_THEME_STYLE_ELEMENT_ID);
+    const beforeTerminalTokens = Object.fromEntries(TERMINAL_THEME_TOKENS.map(token => [
+      token,
+      document.documentElement.style.getPropertyValue(token),
+    ]));
 
     dispatchParentMessage({
       type: 'theme.changed',
@@ -309,6 +406,12 @@ describe('installBuiltInThemeClient', () => {
     expect(document.getElementById(BUILT_IN_THEME_STYLE_ELEMENT_ID)).toBe(styleElement);
     expect(document.documentElement.style.getPropertyValue('--hg-theme-background')).toBe('#20242f');
     expect(snapshots.at(-1)).toEqual({ theme: serviceTheme, source: 'changed' });
+    const afterTerminalTokens = Object.fromEntries(TERMINAL_THEME_TOKENS.map(token => [
+      token,
+      document.documentElement.style.getPropertyValue(token),
+    ]));
+    expect(Object.values(afterTerminalTokens).every(value => value !== '')).toBe(true);
+    expect(afterTerminalTokens).not.toEqual(beforeTerminalTokens);
 
     client.close();
     dispatchParentMessage({

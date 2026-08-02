@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import type { NostrEvent } from 'nostr-tools/core';
-import { relay } from '@napplet/sdk';
+import { inc, relay } from '@napplet/sdk';
 import App from './App.svelte';
 
 type RelayEventResult = { event: NostrEvent };
@@ -90,6 +90,31 @@ describe('stream app live discovery', () => {
 
     expect(document.body.textContent).toContain('no live streams found');
     expect(document.body.textContent).not.toContain('scanning...');
+
+    unmount(component);
+  });
+
+  it('answers a canonical stream-context event with only the optional payload', async () => {
+    const component = mount(App, { target: document.body });
+    await Promise.resolve();
+
+    const [, callback] = vi.mocked(inc.on).mock.calls.find(
+      ([topic]) => topic === 'stream:current-context-get',
+    )!;
+    const payload = { requestId: 'cold-context-request' };
+    callback!({
+      topic: 'stream:current-context-get',
+      sender: 'runtime-attested-chat',
+      payload,
+    });
+
+    expect(inc.emit).toHaveBeenCalledWith(
+      'stream:current-context',
+      JSON.stringify({
+        context: { streamAddr: null, title: null, chatRelays: [] },
+        payload,
+      }),
+    );
 
     unmount(component);
   });

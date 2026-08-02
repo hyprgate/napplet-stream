@@ -3,7 +3,7 @@
   import { createStreamStore, parseKind30311 } from './lib/stream-store';
   import { streamChatContext } from './lib/stream-chat-context';
   import type { LiveStream } from './lib/stream-store';
-  import { relay, inc as ipc } from '@napplet/sdk';
+  import { relay, inc } from '@napplet/sdk';
   import {
     controlRuntimePlayback,
     createStreamChannelSwitchPayload,
@@ -108,7 +108,7 @@
 
   function publishStreamContext(stream: LiveStream): void {
     selectedStream = stream;
-    ipc.emit('stream:channel-switch', [], JSON.stringify(
+    inc.emit('stream:channel-switch', JSON.stringify(
       createStreamChannelSwitchPayload({
         streamUrl: stream.streamUrl,
         streamId: stream.streamAddr,
@@ -171,13 +171,13 @@
 
     // Pull-on-mount responder: chat napp requests current stream context (D-18, Pitfall 6)
     try {
-      contextSub = ipc.on('stream:current-context-get', (payload) => {
-        ipc.emit('stream:current-context', [], JSON.stringify(
+      contextSub = inc.on('stream:current-context-get', (event) => {
+        inc.emit('stream:current-context', JSON.stringify(
           createStreamCurrentContextPayload(
             selectedStream
               ? { streamAddr: selectedStream.streamAddr, title: selectedStream.title, chatRelays: selectedStream.chatRelays }
               : { streamAddr: null, title: null, chatRelays: [] },
-            payload,
+            event.payload,
           ),
         ));
       });

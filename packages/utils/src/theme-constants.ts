@@ -81,6 +81,9 @@ export const BUILT_IN_THEME_CSS_TOKENS = [
   '--hg-accent',
   '--hg-accent-primary',
   '--hg-accent-primary-rgb',
+  '--hg-accent-success',
+  '--hg-terminal-selection-bg',
+  '--hg-terminal-selection-text',
   '--hg-accent-green',
   '--hg-accent-cyan',
   '--hg-accent-warning',
@@ -175,6 +178,11 @@ export const THEME_CATALOG_LIST_RESULT = 'hyprgate.themeCatalog.list.result';
 export const DEFAULT_REQUEST_TIMEOUT_MS = 1_500;
 
 export const THEME_CLIENT_STYLE = `
+:root[data-hg-theme-client="active"] ::selection {
+  background-color: var(--hg-terminal-selection-bg);
+  color: var(--hg-terminal-selection-text);
+}
+
 :root[data-hg-theme-client="active"] body,
 :root[data-hg-theme-client="active"] #app,
 :root[data-hg-theme-client="active"] .app,

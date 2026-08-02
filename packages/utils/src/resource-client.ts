@@ -1,4 +1,4 @@
-import { resourceBytesAsObjectURL, resourceBytesMany } from '@napplet/nap/resource';
+import { resourceBytes, resourceBytesMany } from '@napplet/nap/resource';
 import type { ResourceBytesErrorItem, ResourceBytesItem } from '@napplet/nap/resource';
 
 export interface ResourceObjectUrlSubscription {
@@ -22,7 +22,7 @@ export type ResourceObjectUrlsChange = (source: string, url: string | null) => v
 interface ResourceObjectUrlHandle {
   url: string;
   revoke(): void;
-  ready?: Promise<unknown>;
+  ready: Promise<unknown>;
 }
 
 type ResourceActionReturn<Parameter> = {
@@ -37,6 +37,7 @@ const NOOP_SUBSCRIPTION: ResourceObjectUrlSubscription = { close: () => { /* no-
 const RESOURCE_IMAGE_STALLED_RETRY_MS = 5_000;
 const RESOURCE_IMAGE_RETRY_DELAYS_MS = [500, 1_500, 3_000, 5_000] as const;
 const RESOURCE_IMAGE_BATCH_SIZE = 10;
+const RESOURCE_IMAGE_BATCH_DEBOUNCE_MS = 500;
 const RESOURCE_OBJECT_URL_CACHE_LIMIT = 192;
 
 interface CachedResourceObjectUrlEntry {
@@ -65,7 +66,7 @@ interface BatchedResourceImageGroup {
 }
 
 const pendingBatchedResourceImageJobs: BatchedResourceImageJob[] = [];
-let batchedResourceImageFlushQueued = false;
+let batchedResourceImageFlushTimer: ReturnType<typeof setTimeout> | null = null;
 
 function normalizeSource(source: string | null | undefined): string | null {
   if (typeof source !== 'string') return null;
@@ -155,6 +156,31 @@ function createResolvedResourceObjectUrlHandle(blob: Blob): ResourceObjectUrlHan
   };
 }
 
+function createPendingResourceObjectUrlHandle(source: string): ResourceObjectUrlHandle {
+  let objectUrl: string | null = null;
+  let revoked = false;
+  const handle: ResourceObjectUrlHandle = {
+    url: '',
+    ready: Promise.resolve(),
+    revoke(): void {
+      if (revoked) return;
+      revoked = true;
+      if (objectUrl) URL.revokeObjectURL(objectUrl);
+      objectUrl = null;
+      handle.url = '';
+    },
+  };
+
+  handle.ready = resourceBytes(source).then((blob) => {
+    if (revoked) return;
+    objectUrl = URL.createObjectURL(blob);
+    handle.url = objectUrl;
+    return objectUrl;
+  });
+
+  return handle;
+}
+
 function cacheResourceObjectUrlHandle(source: string, handle: ResourceObjectUrlHandle): CachedResourceObjectUrlEntry {
   const existing = resourceObjectUrlCache.get(source);
   if (existing) deleteCachedResourceObjectUrlEntry(existing);
@@ -184,7 +210,7 @@ function getCachedResourceObjectUrlEntry(
 
   if (existing && options.refresh) deleteCachedResourceObjectUrlEntry(existing);
 
-  const handle = resourceBytesAsObjectURL(source) as ResourceObjectUrlHandle;
+  const handle = createPendingResourceObjectUrlHandle(source);
   const entry = cacheResourceObjectUrlHandle(source, handle);
 
   Promise.resolve(handle.ready)
@@ -224,9 +250,11 @@ function cancelBatchedResourceImageJob(job: BatchedResourceImageJob): void {
 }
 
 function queueBatchedResourceImageFlush(): void {
-  if (batchedResourceImageFlushQueued) return;
-  batchedResourceImageFlushQueued = true;
-  queueMicrotask(flushBatchedResourceImageJobs);
+  if (batchedResourceImageFlushTimer !== null) return;
+  batchedResourceImageFlushTimer = setTimeout(() => {
+    batchedResourceImageFlushTimer = null;
+    flushBatchedResourceImageJobs();
+  }, RESOURCE_IMAGE_BATCH_DEBOUNCE_MS);
 }
 
 function enqueueBatchedResourceImageJob(job: BatchedResourceImageJob): void {
@@ -235,7 +263,7 @@ function enqueueBatchedResourceImageJob(job: BatchedResourceImageJob): void {
 }
 
 function flushBatchedResourceImageJobs(): void {
-  batchedResourceImageFlushQueued = false;
+  batchedResourceImageFlushTimer = null;
   const jobs = pendingBatchedResourceImageJobs.splice(0).filter((job) => job.active);
   if (jobs.length === 0) return;
 

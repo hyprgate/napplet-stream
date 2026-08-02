@@ -7,6 +7,10 @@ import {
   DESTRUCTIVE_KINDS,
   BusKind,
   ALL_CAPABILITY_LABELS,
+  createIntentRequest,
+  createIntentResult,
+  parseIncEvent,
+  parseIntentResult,
 } from './protocol.js';
 
 describe('protocol constants', () => {
@@ -111,5 +115,51 @@ describe('ALL_CAPABILITY_LABELS', () => {
 describe('DESTRUCTIVE_KINDS smoke', () => {
   it('DESTRUCTIVE_KINDS.has(5) is true', () => {
     expect(DESTRUCTIVE_KINDS.has(5)).toBe(true);
+  });
+});
+
+describe('canonical INTENT and INC wire helpers', () => {
+  it('keeps action optional on requests while preserving independent selectors', () => {
+    const request = createIntentRequest({
+      archetype: 'profile',
+      convention: 'napplet:document/open',
+      payload: { pubkey: 'a'.repeat(64) },
+      behavior: { newWindow: true },
+    });
+
+    expect(request).toEqual({
+      archetype: 'profile',
+      convention: 'napplet:document/open',
+      payload: { pubkey: 'a'.repeat(64) },
+      behavior: { newWindow: true },
+    });
+    expect(request).not.toHaveProperty('action');
+    expect(request!.archetype).toBe('profile');
+  });
+
+  it('normalizes an omitted request action in every result and rejects missing result identity', () => {
+    const request = createIntentRequest({ archetype: 'note', payload: { id: 'a'.repeat(64) } });
+    const failure = createIntentResult(request!, { ok: false, handled: false, error: 'no handler' });
+
+    expect(failure).toEqual({
+      ok: false,
+      archetype: 'note',
+      action: 'open',
+      handled: false,
+      error: 'no handler',
+    });
+    expect(failure!.handled).toBe(false);
+    expect(parseIntentResult({ ok: false, archetype: 'note', handled: false })).toBeNull();
+    expect(parseIntentResult({ ok: false, archetype: 'note', action: '', handled: false })).toBeNull();
+  });
+
+  it('models one runtime-attested INC event and preserves an absent payload', () => {
+    const event = parseIncEvent({ topic: 'note:open', sender: 'shell' });
+
+    expect(event).toEqual({ topic: 'note:open', sender: 'shell' });
+    expect(Object.hasOwn(event!, 'payload')).toBe(false);
+    expect(event!.sender).toBe('shell');
+    expect(parseIncEvent({ topic: '', sender: 'shell' })).toBeNull();
+    expect(parseIncEvent({ topic: 'note:open', sender: 1 })).toBeNull();
   });
 });

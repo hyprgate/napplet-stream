@@ -36,7 +36,13 @@ export {
   KIND_INTEREST_SETS,
   KIND_EMOJI_SETS,
   KIND_RELEASE_ARTIFACT_SETS,
+  KIND_APPLICATION_DATA,
+  KIND_APP_CURATION_SET,
+  KIND_SOFTWARE_APPLICATION,
   KIND_FOLLOW_PACK,
+  KIND_NIP5D_SNAPSHOT,
+  KIND_NIP5D_ROOT,
+  KIND_NIP5D_NAMED,
   NAPP_SPEC_REVISION,
   // Canonical destructive-kind gate set (Set<number>) — single source of truth
   // lives in @hyprgate/types/protocol. Re-exported here so utils consumers do not

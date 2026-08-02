@@ -34,6 +34,7 @@ import {
   KIND_INTEREST_SETS,
   KIND_EMOJI_SETS,
   KIND_RELEASE_ARTIFACT_SETS,
+  KIND_APPLICATION_DATA,
 } from './napp-spec.js';
 
 export const PROTOCOL_VERSION = '2.0.0' as const;
@@ -96,6 +97,7 @@ export const DESTRUCTIVE_KINDS = new Set<number>([
   KIND_INTEREST_SETS,       // 30015
   KIND_EMOJI_SETS,          // 30030
   KIND_RELEASE_ARTIFACT_SETS, // 30063
+  KIND_APPLICATION_DATA,      // 30078
 ]);
 
 /**
@@ -204,3 +206,133 @@ export type RelayMessage =
  *             update AclSection.svelte and pseudo-relay.ts.
  */
 export const ALL_CAPABILITIES = ALL_CAPABILITY_LABELS;
+
+/** Runtime-authorized preference for an installed INTENT handler. */
+export type IntentHandlerPreference = 'default' | 'choose' | (string & {});
+
+/** Window and focus hints for an INTENT invocation. */
+export interface IntentBehavior {
+  focus?: boolean;
+  newWindow?: boolean;
+  reuse?: boolean;
+}
+
+/** Optional selectors for an INTENT request. `action` is omitted for `open`. */
+export interface IntentRequestOptions {
+  action?: string;
+  convention?: string;
+  handler?: IntentHandlerPreference;
+  behavior?: IntentBehavior;
+}
+
+/** Public-compatible NAP-INTENT request shape shared by Hyprgate producers. */
+export interface IntentRequest extends IntentRequestOptions {
+  archetype: string;
+  payload?: unknown;
+}
+
+/** Public-compatible NAP-INTENT result shape. Result identity is never optional. */
+export interface IntentResult {
+  ok: boolean;
+  archetype: string;
+  action: string;
+  handled: boolean;
+  handler?: string;
+  windowId?: string;
+  convention?: string;
+  error?: string;
+}
+
+/** One runtime-attested NAP-INC event. */
+export interface IncEvent {
+  topic: string;
+  sender: string;
+  payload?: unknown;
+}
+
+/** Validate and normalize a public-compatible INTENT request. */
+export function createIntentRequest(input: IntentRequest): IntentRequest | null {
+  if (!isRecord(input) || !isIntentSlug(input.archetype)) return null;
+  if (input.action !== undefined && !isIntentSlug(input.action)) return null;
+  if (input.convention !== undefined && !isIntentConvention(input.convention)) return null;
+  if (input.handler !== undefined && !isIntentSlug(input.handler)) return null;
+  if (input.behavior !== undefined && !isIntentBehavior(input.behavior)) return null;
+
+  return {
+    archetype: input.archetype,
+    ...(input.action !== undefined ? { action: input.action } : {}),
+    ...(input.convention !== undefined ? { convention: input.convention } : {}),
+    ...(input.handler !== undefined ? { handler: input.handler } : {}),
+    ...(input.behavior !== undefined ? { behavior: input.behavior } : {}),
+    ...('payload' in input ? { payload: input.payload } : {}),
+  };
+}
+
+/** Parse a received result whose canonical identity fields are all required. */
+export function parseIntentResult(input: unknown): IntentResult | null {
+  if (!isRecord(input)) return null;
+  if (typeof input.ok !== 'boolean' || typeof input.handled !== 'boolean') return null;
+  if (!isIntentSlug(input.archetype) || !isIntentSlug(input.action)) return null;
+  if (input.handler !== undefined && !isIntentSlug(input.handler)) return null;
+  if (input.windowId !== undefined && typeof input.windowId !== 'string') return null;
+  if (input.convention !== undefined && !isIntentConvention(input.convention)) return null;
+  if (input.error !== undefined && typeof input.error !== 'string') return null;
+
+  return {
+    ok: input.ok,
+    archetype: input.archetype,
+    action: input.action,
+    handled: input.handled,
+    ...(input.handler !== undefined ? { handler: input.handler } : {}),
+    ...(input.windowId !== undefined ? { windowId: input.windowId } : {}),
+    ...(input.convention !== undefined ? { convention: input.convention } : {}),
+    ...(input.error !== undefined ? { error: input.error } : {}),
+  };
+}
+
+/** Build a canonical result from a request, defaulting only the result action. */
+export function createIntentResult(
+  request: IntentRequest,
+  outcome: Omit<IntentResult, 'archetype' | 'action'> & Partial<Pick<IntentResult, 'archetype' | 'action'>>,
+): IntentResult | null {
+  const normalizedRequest = createIntentRequest(request);
+  if (!normalizedRequest) return null;
+  return parseIntentResult({
+    ...outcome,
+    archetype: outcome.archetype ?? normalizedRequest.archetype,
+    action: outcome.action ?? normalizedRequest.action ?? 'open',
+  });
+}
+
+/** Parse one runtime-attested INC event without manufacturing an absent payload. */
+export function parseIncEvent(input: unknown): IncEvent | null {
+  if (!isRecord(input) || !isNonEmptyString(input.topic) || !isNonEmptyString(input.sender)) return null;
+  return {
+    topic: input.topic,
+    sender: input.sender,
+    ...('payload' in input ? { payload: input.payload } : {}),
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
+}
+
+function isIntentSlug(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-z0-9][a-z0-9._-]{0,127}$/.test(value);
+}
+
+function isIntentConvention(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const match = /^napplet:([^/]+)\/([^/]+)$/.exec(value);
+  return match !== null && isIntentSlug(match[1]) && isIntentSlug(match[2]);
+}
+
+function isIntentBehavior(value: unknown): value is IntentBehavior {
+  if (!isRecord(value)) return false;
+  return ['focus', 'newWindow', 'reuse'].every((key) => value[key] === undefined || typeof value[key] === 'boolean');
+}

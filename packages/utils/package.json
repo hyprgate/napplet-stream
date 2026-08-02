@@ -51,8 +51,8 @@
   },
   "dependencies": {
     "@hyprgate/types": "workspace:*",
-    "@napplet/nap": "0.27.1",
-    "@napplet/sdk": "0.24.1",
+    "@napplet/nap": "0.31.2",
+    "@napplet/sdk": "0.27.2",
     "@sandwichfarm/encoded-entities": "^0.1.1",
     "nostr-tools": "2.23.3"
   },

@@ -58,6 +58,18 @@ export interface ExternalVideoEmbed {
   thumbnailUrl?: string;
 }
 
+/**
+ * A validated, single-video YouTube target. This is deliberately stricter
+ * than generic embeds because shell playback must never turn a channel,
+ * playlist, lookalike host, or malformed link into a media session.
+ */
+export interface YoutubeVideoTarget {
+  videoId: string;
+  startSeconds: number | null;
+  embedUrl: string;
+  thumbnailUrl: string;
+}
+
 export function parseNoteContent(content: string, options: ParseNoteContentOptions = {}): NoteContentBlock[] {
   const candidates = collectCandidates(content, options);
   const blocks: NoteContentBlock[] = [];
@@ -261,18 +273,10 @@ export function resolveExternalVideoEmbed(value: string): ExternalVideoEmbed | n
     return null;
   }
 
-  const hostname = url.hostname.replace(/^www\./, '').toLowerCase();
-  if (hostname === 'youtu.be') {
-    const id = url.pathname.split('/').filter(Boolean)[0];
-    return id ? youtubeEmbed(id) : null;
-  }
-  if (hostname === 'youtube.com' || hostname === 'm.youtube.com') {
-    const watchId = url.searchParams.get('v');
-    const pathParts = url.pathname.split('/').filter(Boolean);
-    const pathId = pathParts[0] === 'shorts' || pathParts[0] === 'embed' ? pathParts[1] : undefined;
-    const id = watchId ?? pathId;
-    return id ? youtubeEmbed(id) : null;
-  }
+  const youtube = resolveYoutubeVideo(value);
+  if (youtube) return youtubeEmbed(youtube);
+
+  const hostname = url.hostname.replace(/^www\./i, '').toLowerCase();
   if (hostname === 'vimeo.com' || hostname === 'player.vimeo.com') {
     const id = url.pathname.split('/').filter((part) => /^\d+$/.test(part)).at(-1);
     return id ? { provider: 'vimeo', embedUrl: `https://player.vimeo.com/video/${id}` } : null;
@@ -288,11 +292,89 @@ export function resolveExternalVideoEmbed(value: string): ExternalVideoEmbed | n
   return null;
 }
 
-function youtubeEmbed(id: string): ExternalVideoEmbed {
+const YOUTUBE_VIDEO_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+/**
+ * Recognize only the single-video YouTube forms that the shell can safely hand
+ * to its IFrame backend. The result is shared by note previews and NAP-LINK
+ * dispatch so their host/id rules cannot diverge.
+ */
+export function resolveYoutubeVideo(value: string | URL): YoutubeVideoTarget | null {
+  let url: URL;
+  try {
+    url = typeof value === 'string' ? new URL(value) : value;
+  } catch {
+    return null;
+  }
+
+  if (url.protocol !== 'https:' || url.port || url.username || url.password) return null;
+  const hostname = url.hostname.toLowerCase();
+  let videoId: string | null = null;
+  const path = url.pathname;
+
+  if (hostname === 'youtu.be') {
+    const parts = path.split('/').filter(Boolean);
+    videoId = parts.length === 1 ? parts[0] ?? null : null;
+  } else if (hostname === 'youtube.com' || hostname === 'www.youtube.com' || hostname === 'm.youtube.com') {
+    if (path === '/watch') {
+      videoId = url.searchParams.get('v');
+    } else {
+      const parts = path.split('/').filter(Boolean);
+      if (parts.length === 2 && (parts[0] === 'shorts' || parts[0] === 'embed')) {
+        videoId = parts[1] ?? null;
+      }
+    }
+  }
+
+  if (!videoId || !YOUTUBE_VIDEO_ID_RE.test(videoId)) return null;
+
+  const startSeconds = resolveYoutubeStart(url);
+  const embedUrl = new URL(`https://www.youtube-nocookie.com/embed/${videoId}`);
+  if (startSeconds !== null) embedUrl.searchParams.set('start', String(startSeconds));
+  return {
+    videoId,
+    startSeconds,
+    embedUrl: embedUrl.toString(),
+    thumbnailUrl: `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+  };
+}
+
+function resolveYoutubeStart(url: URL): number | null {
+  // The explicit player `start` parameter wins when both forms are present;
+  // this mirrors the destination the shell ultimately constructs.
+  const candidates = [
+    url.searchParams.get('start'),
+    url.searchParams.get('t'),
+    new URLSearchParams(url.hash.startsWith('#') ? url.hash.slice(1) : url.hash).get('t'),
+  ];
+  for (const candidate of candidates) {
+    const parsed = parseYoutubeTimestamp(candidate);
+    if (parsed !== null) return parsed;
+  }
+  return null;
+}
+
+function parseYoutubeTimestamp(value: string | null): number | null {
+  if (!value) return null;
+  if (/^\d+$/.test(value)) {
+    const seconds = Number(value);
+    return Number.isSafeInteger(seconds) ? seconds : null;
+  }
+
+  const match = /^(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?$/.exec(value);
+  if (!match || !match[1] && !match[2] && !match[3]) return null;
+  const hours = Number(match[1] ?? 0);
+  const minutes = Number(match[2] ?? 0);
+  const seconds = Number(match[3] ?? 0);
+  const total = hours * 3600 + minutes * 60 + seconds;
+  return Number.isSafeInteger(total) ? total : null;
+}
+
+function youtubeEmbed(target: YoutubeVideoTarget): ExternalVideoEmbed {
   return {
     provider: 'youtube',
-    embedUrl: `https://www.youtube-nocookie.com/embed/${id}`,
-    thumbnailUrl: `https://i.ytimg.com/vi/${id}/hqdefault.jpg`,
+    embedUrl: target.embedUrl,
+    thumbnailUrl: target.thumbnailUrl,
   };
 }
 

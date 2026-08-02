@@ -6,6 +6,7 @@ import {
   KIND_TEXT_NOTE,
   NOTE_VIEWER_OPEN_PROTOCOL,
   NOTE_VIEWER_OPEN_TOPIC,
+  createNoteViewerOpenIntentRequest,
   createNoteViewerOpenPayload,
   createKind1ReplyTags,
   createNip22CommentTags,
@@ -14,6 +15,7 @@ import {
   parseNip10Reply,
   parseNip22Comment,
   parseNoteViewerReply,
+  parseNoteViewerOpenIntentResult,
 } from './note-viewer-protocol.js';
 
 const ROOT = makeEvent({ id: 'root', kind: 1, pubkey: 'root-pubkey' });
@@ -57,6 +59,28 @@ describe('note viewer protocol helpers', () => {
       kind: 1,
       relays: ['wss://relay.example'],
     });
+  });
+
+  it('builds an archetype-led note request and retains canonical no-handler identity', () => {
+    const request = createNoteViewerOpenIntentRequest({
+      target: { type: 'event', id: 'a'.repeat(64) },
+    }, { convention: 'napplet:document/open' });
+
+    expect(request).toMatchObject({
+      archetype: 'note',
+      convention: 'napplet:document/open',
+      payload: { target: { type: 'event', id: 'a'.repeat(64) } },
+    });
+    expect(request).not.toHaveProperty('action');
+    expect(createNoteViewerOpenIntentRequest({ target: { type: 'event', id: 'A'.repeat(64) } })).toBeNull();
+    expect(parseNoteViewerOpenIntentResult({
+      ok: false,
+      archetype: 'note',
+      action: 'open',
+      handled: false,
+      error: 'no handler',
+    })).toMatchObject({ archetype: 'note', action: 'open', handled: false });
+    expect(parseNoteViewerOpenIntentResult({ ok: false, archetype: 'note', handled: false })).toBeNull();
   });
 
   it('rebuilds stale event and address NIP-19 targets with payload relay hints', () => {
