@@ -40,6 +40,14 @@ const RESOURCE_IMAGE_BATCH_SIZE = 10;
 const RESOURCE_IMAGE_BATCH_DEBOUNCE_MS = 500;
 const RESOURCE_OBJECT_URL_CACHE_LIMIT = 192;
 
+type ResourceImageState = 'empty' | 'loading' | 'ready' | 'error';
+
+interface ResourceImagePresentation {
+  clear(state: Exclude<ResourceImageState, 'ready'>): void;
+  show(source: string): void;
+  destroy(): void;
+}
+
 interface CachedResourceObjectUrlEntry {
   source: string;
   handle: ResourceObjectUrlHandle;
@@ -67,6 +75,60 @@ interface BatchedResourceImageGroup {
 
 const pendingBatchedResourceImageJobs: BatchedResourceImageJob[] = [];
 let batchedResourceImageFlushTimer: ReturnType<typeof setTimeout> | null = null;
+
+function createResourceImagePresentation(
+  node: HTMLImageElement,
+  onNativeError: () => void,
+): ResourceImagePresentation {
+  const initialState = node.getAttribute('data-resource-image-state');
+  const initialVisibility = node.style.visibility;
+  let assignedSource: string | null = null;
+
+  function setState(state: ResourceImageState): void {
+    node.dataset.resourceImageState = state;
+    node.style.visibility = state === 'ready' ? initialVisibility : 'hidden';
+  }
+
+  function clear(state: Exclude<ResourceImageState, 'ready'>): void {
+    assignedSource = null;
+    node.removeAttribute('src');
+    setState(state);
+  }
+
+  function handleLoad(): void {
+    if (!assignedSource || node.getAttribute('src') !== assignedSource) return;
+    setState('ready');
+  }
+
+  function handleError(): void {
+    if (!assignedSource || node.getAttribute('src') !== assignedSource) return;
+    clear('error');
+    onNativeError();
+  }
+
+  function show(source: string): void {
+    assignedSource = source;
+    setState('loading');
+    node.src = source;
+    if (node.complete && node.naturalWidth > 0) handleLoad();
+  }
+
+  node.addEventListener('load', handleLoad);
+  node.addEventListener('error', handleError);
+
+  return {
+    clear,
+    show,
+    destroy(): void {
+      assignedSource = null;
+      node.removeEventListener('load', handleLoad);
+      node.removeEventListener('error', handleError);
+      if (initialState === null) node.removeAttribute('data-resource-image-state');
+      else node.setAttribute('data-resource-image-state', initialState);
+      node.style.visibility = initialVisibility;
+    },
+  };
+}
 
 function normalizeSource(source: string | null | undefined): string | null {
   if (typeof source !== 'string') return null;
@@ -453,7 +515,10 @@ export function loadResourceObjectUrls(
     for (const fetchChunk of chunkItems(fetchSources, normalizeResourceChunkSize(options.chunkSize))) {
       let request: Promise<ResourceBytesItem[]>;
       try {
-        request = resourceBytesMany(fetchChunk, { signal: abortController.signal });
+        request = resourceBytesMany(
+          fetchChunk.map((url) => ({ url })),
+          { signal: abortController.signal },
+        );
       } catch (error) {
         for (const source of fetchChunk) notifyFetchError(source, error);
         continue;
@@ -505,6 +570,17 @@ export function resourceImage(
   let subscription: ResourceObjectUrlSubscription = NOOP_SUBSCRIPTION;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let attempt = 0;
+  let resourceResolved = false;
+
+  const presentation = createResourceImagePresentation(node, () => {
+    resourceResolved = false;
+    const normalized = normalizeSource(currentSource);
+    if (!normalized || !shouldUseResourceNub(normalized)) return;
+    const delay =
+      RESOURCE_IMAGE_RETRY_DELAYS_MS[Math.min(attempt, RESOURCE_IMAGE_RETRY_DELAYS_MS.length - 1)]!;
+    attempt++;
+    scheduleRetry(delay);
+  });
 
   function clearRetry(): void {
     if (retryTimer === null) return;
@@ -512,30 +588,30 @@ export function resourceImage(
     retryTimer = null;
   }
 
-  function subscribe(nextSource: string | null | undefined, refresh = false): void {
-    let resolved = false;
+  function scheduleRetry(delay: number): void {
+    if (resourceResolved || retryTimer !== null) return;
+    retryTimer = setTimeout(() => {
+      retryTimer = null;
+      subscribe(currentSource, true);
+    }, delay);
+  }
 
-    function scheduleRetry(delay: number): void {
-      if (resolved) return;
-      if (retryTimer !== null) return;
-      retryTimer = setTimeout(() => {
-        retryTimer = null;
-        if (currentSource === nextSource) subscribe(nextSource, true);
-      }, delay);
-    }
+  function subscribe(nextSource: string | null | undefined, refresh = false): void {
+    const normalized = normalizeSource(nextSource);
+    resourceResolved = false;
+    presentation.clear(normalized ? 'loading' : 'empty');
 
     subscription.close();
     subscription = loadResourceObjectUrl(nextSource, (resolvedUrl) => {
       if (resolvedUrl) {
-        resolved = true;
+        resourceResolved = true;
         clearRetry();
-        node.src = resolvedUrl;
-      } else {
-        node.removeAttribute('src');
+        presentation.show(resolvedUrl);
       }
     }, {
       refresh,
       onError: () => {
+        presentation.clear('error');
         const delay =
           RESOURCE_IMAGE_RETRY_DELAYS_MS[Math.min(attempt, RESOURCE_IMAGE_RETRY_DELAYS_MS.length - 1)]!;
         attempt++;
@@ -543,7 +619,6 @@ export function resourceImage(
         scheduleRetry(delay);
       },
     });
-    const normalized = normalizeSource(nextSource);
     if (normalized && shouldUseResourceNub(normalized)) scheduleRetry(RESOURCE_IMAGE_STALLED_RETRY_MS);
   }
 
@@ -563,6 +638,7 @@ export function resourceImage(
       clearRetry();
       subscription.close();
       node.removeAttribute('src');
+      presentation.destroy();
     },
   };
 }
@@ -577,6 +653,15 @@ export function resourceImageBatch(
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
   let attempt = 0;
   let resolved = false;
+
+  const presentation = createResourceImagePresentation(node, () => {
+    resolved = false;
+    if (!currentSource || !shouldUseResourceNub(currentSource)) return;
+    const delay =
+      RESOURCE_IMAGE_RETRY_DELAYS_MS[Math.min(attempt, RESOURCE_IMAGE_RETRY_DELAYS_MS.length - 1)]!;
+    attempt++;
+    scheduleRetry(delay);
+  });
 
   function clearRetry(): void {
     if (retryTimer === null) return;
@@ -603,13 +688,15 @@ export function resourceImageBatch(
     resolved = false;
 
     if (!currentSource) {
-      node.removeAttribute('src');
+      presentation.clear('empty');
       return;
     }
 
+    presentation.clear('loading');
+
     if (!shouldUseResourceNub(currentSource)) {
       resolved = true;
-      node.src = currentSource;
+      presentation.show(currentSource);
       return;
     }
 
@@ -625,11 +712,11 @@ export function resourceImageBatch(
         if (resolvedUrl) {
           resolved = true;
           clearRetry();
-          node.src = resolvedUrl;
+          presentation.show(resolvedUrl);
           return;
         }
 
-        node.removeAttribute('src');
+        presentation.clear('error');
         const delay =
           RESOURCE_IMAGE_RETRY_DELAYS_MS[Math.min(attempt, RESOURCE_IMAGE_RETRY_DELAYS_MS.length - 1)]!;
         attempt++;
@@ -662,6 +749,7 @@ export function resourceImageBatch(
       clearRetry();
       cancelActiveJob();
       node.removeAttribute('src');
+      presentation.destroy();
     },
   };
 }

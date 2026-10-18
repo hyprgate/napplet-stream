@@ -5,6 +5,7 @@ import {
   RUNTIME_CONTROL_MAX_WIRE_COLLECTION_LENGTH,
   RUNTIME_CONTROL_MAX_WIRE_DEPTH,
   RUNTIME_CONTROL_MAX_WIRE_NODES,
+  RUNTIME_CONTROL_MAX_REGISTRY_WIRE_DEPTH,
   RUNTIME_CONTROL_MAX_REGISTRY_WIRE_NODES,
   RUNTIME_CONTROL_MAX_WIRE_STRING_LENGTH,
   isRuntimeControlEvent,
@@ -73,6 +74,17 @@ function dispatch(data: unknown, options: { origin?: string; source?: MessageEve
   }));
 }
 
+/** Answers only the actual public describe request; callers await client metadata themselves. */
+function replyToDescribeRequest(message: unknown, registrationRevision = 1): void {
+  if (!isRuntimeControlRequest(message) || message.method !== 'describe') throw new Error('Expected a public describe request');
+  expect(message.payload).toEqual({ operationId: 'apps.list' });
+  dispatch(response(message.requestId, 'describe', {
+    revision: registrationRevision,
+    registrationRevision,
+    descriptor: descriptor(),
+  }));
+}
+
 afterEach(() => {
   vi.restoreAllMocks();
 });
@@ -85,7 +97,7 @@ describe('runtime control wire DTOs', () => {
       kind: 'request',
       requestId: 'request-1',
       method: 'invoke',
-      payload: { operationId: 'apps.list', arguments: {} },
+      payload: { operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: 1 },
     };
     expect(isRuntimeControlRequest(valid)).toBe(true);
 
@@ -185,6 +197,52 @@ describe('runtime control wire DTOs', () => {
     expect(isRuntimeControlResponse(response('request-running', 'getInvocation', runningSnapshot))).toBe(true);
   });
 
+  it('requires exact per-operation revisions and keeps stale recovery responses finite', () => {
+    const invoke: RuntimeControlRequest = {
+      protocol: RUNTIME_CONTROL_PROTOCOL,
+      version: RUNTIME_CONTROL_VERSION,
+      kind: 'request',
+      requestId: 'revision-invoke',
+      method: 'invoke',
+      payload: { operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: 7 },
+    };
+    expect(isRuntimeControlRequest(invoke)).toBe(true);
+    for (const revision of [undefined, 0, -1, 1.5, Number.NaN, Infinity, '7']) {
+      expect(isRuntimeControlRequest({
+        ...invoke,
+        payload: { ...invoke.payload, expectedRegistrationRevision: revision },
+      })).toBe(false);
+    }
+
+    const described = response('revision-describe', 'describe', {
+      revision: 9,
+      registrationRevision: 7,
+      descriptor: descriptor(),
+    });
+    expect(isRuntimeControlResponse(described)).toBe(true);
+    expect(isRuntimeControlResponse({ ...described, payload: { revision: 9, descriptor: descriptor() } })).toBe(false);
+    expect(isRuntimeControlResponse(response('revision-resolve', 'resolve', {
+      revision: 9,
+      registrationRevision: 7,
+      descriptor: descriptor(),
+    }))).toBe(true);
+
+    const stale = {
+      code: 'stale_descriptor',
+      message: 'The control descriptor changed; rediscover it before retrying.',
+      details: { revision: 9, guidance: 'Rediscover the operation and retry explicitly.' },
+    };
+    expect(isRuntimeControlResponse(response('stale-result', 'getInvocation', {
+      id: 'host-stale', operationId: 'apps.list', operationRevision: 7, status: 'failed',
+      cancellable: false, startedAt: 1, completedAt: 2, progress: [], error: stale,
+    }))).toBe(true);
+    expect(isRuntimeControlResponse(response('stale-hidden', 'getInvocation', {
+      id: 'host-stale', operationId: 'apps.list', operationRevision: 7, status: 'failed',
+      cancellable: false, startedAt: 1, completedAt: 2, progress: [],
+      error: { ...stale, details: { ...stale.details, descriptor: descriptor() } },
+    }))).toBe(false);
+  });
+
   it('allows bounded registry snapshots without relaxing invocation result budgets', () => {
     const operations = Array.from({ length: 240 }, (_, index) => descriptor(`apps.${index}`));
     expect(operations.length).toBeLessThan(RUNTIME_CONTROL_MAX_WIRE_COLLECTION_LENGTH);
@@ -220,6 +278,60 @@ describe('runtime control wire DTOs', () => {
       progress: [],
       value: { nodeHeavy },
     }))).toBe(false);
+  });
+
+  it('keeps registry discovery depth and node budgets finite while allowing complete command contracts', () => {
+    const nestedSchema = (depth: number): Record<string, unknown> => {
+      let schema: Record<string, unknown> = { type: 'string' };
+      for (let index = 0; index < depth; index += 1) {
+        schema = { type: 'oneOf', schemas: [schema, { type: 'string' }] };
+      }
+      return schema;
+    };
+    const withSchema = (depth: number) => ({
+      ...descriptor(`apps.deep-${depth}`),
+      result: { schema: nestedSchema(depth) },
+    }) as unknown as ControlOperationDescriptor;
+    const deepResponse = (operation: ControlOperationDescriptor) => response('deep-registry', 'describe', {
+      revision: 1,
+      registrationRevision: 1,
+      descriptor: operation,
+    });
+
+    let acceptedDepth = 0;
+    while (acceptedDepth <= RUNTIME_CONTROL_MAX_REGISTRY_WIRE_DEPTH && isRuntimeControlResponse(deepResponse(withSchema(acceptedDepth)))) {
+      acceptedDepth += 1;
+    }
+    // The envelope consumes structural levels before it reaches the nested
+    // command schema, so compare the schema nesting it admitted rather than
+    // treating it as the top-level wire depth directly.
+    expect(acceptedDepth * 2).toBeGreaterThan(RUNTIME_CONTROL_MAX_WIRE_DEPTH);
+    expect(acceptedDepth).toBeLessThanOrEqual(RUNTIME_CONTROL_MAX_REGISTRY_WIRE_DEPTH);
+    expect(isRuntimeControlResponse(deepResponse(withSchema(acceptedDepth)))).toBe(false);
+
+    const dense = Array.from({ length: RUNTIME_CONTROL_MAX_WIRE_COLLECTION_LENGTH }, (_, index) => ({
+      ...descriptor(`apps.dense-${index}`),
+      examples: Array.from({
+        length: Math.ceil(RUNTIME_CONTROL_MAX_REGISTRY_WIRE_NODES / RUNTIME_CONTROL_MAX_WIRE_COLLECTION_LENGTH) + 1,
+      }, () => 'bounded-example'),
+    }));
+    const denseSnapshot = {
+      revision: 1,
+      operations: dense,
+    };
+    expect(isRuntimeControlResponse(response('registry-budget', 'list', denseSnapshot))).toBe(true);
+    expect(isRuntimeControlResponse(response('registry-subscription-budget', 'subscribeRegistry', {
+      subscriptionId: 'registry-budget',
+      snapshot: denseSnapshot,
+    }))).toBe(true);
+    expect(isRuntimeControlEvent({
+      protocol: RUNTIME_CONTROL_PROTOCOL,
+      version: RUNTIME_CONTROL_VERSION,
+      kind: 'event',
+      event: 'registry',
+      subscriptionId: 'registry-budget',
+      snapshot: denseSnapshot,
+    })).toBe(true);
   });
 });
 
@@ -262,8 +374,11 @@ describe('RuntimeControlClient', () => {
       maxSubscriptions: 1,
       requestIdFactory: () => `capacity-${++base}`,
     });
-    const firstInvocation = client.invoke({ operationId: 'apps.list', arguments: {} });
-    await expect(client.invoke({ operationId: 'apps.list', arguments: {} }))
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
+    const firstInvocation = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
+    await expect(client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision }))
       .rejects.toMatchObject({ code: 'too_many_pending' });
     const invokeRequest = postMessage.mock.calls.find(([item]) => (
       (item as RuntimeControlRequest).method === 'invoke'
@@ -293,11 +408,14 @@ describe('RuntimeControlClient', () => {
       requestIdFactory: () => `release-${++base}`,
     });
 
-    const rejectedInvocation = client.invoke({ operationId: 'apps.list', arguments: {} });
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
+    const rejectedInvocation = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
     const rejectedInvokeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
     dispatch(errorResponse(rejectedInvokeRequest.requestId, 'invoke'));
     await expect(rejectedInvocation).rejects.toMatchObject({ code: 'host_error' });
-    const pendingInvocation = client.invoke({ operationId: 'apps.list', arguments: {} });
+    const pendingInvocation = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
 
     const rejectedSubscription = client.subscribeRegistry(() => {});
     const rejectedSubscriptionRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
@@ -319,9 +437,12 @@ describe('RuntimeControlClient', () => {
       requestIdFactory: () => `sequential-${++base}`,
     });
     const handles = [];
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
 
     for (let index = 1; index <= 3; index += 1) {
-      const invocationPromise = client.invoke({ operationId: 'apps.list', arguments: {} });
+      const invocationPromise = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
       const invokeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
       const invocationId = `host-sequential-${index}`;
       dispatch(response(invokeRequest.requestId, 'invoke', { invocationId, cancellable: false }));
@@ -386,7 +507,10 @@ describe('RuntimeControlClient', () => {
     await subscriptionPromise;
     expect(revisions).toEqual([1, 2]);
 
-    const invocationPromise = client.invoke({ operationId: 'apps.list', arguments: {} });
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
+    const invocationPromise = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
     const invokeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
     for (const sequence of [2, 1, 2]) {
       dispatch({
@@ -430,21 +554,23 @@ describe('RuntimeControlClient', () => {
     const client = new RuntimeControlClient();
     let deep: unknown = 'leaf';
     for (let index = 0; index <= RUNTIME_CONTROL_MAX_WIRE_DEPTH; index += 1) deep = { next: deep };
-    await expect(client.invoke({ operationId: 'apps.list', arguments: { deep } } as never))
+    await expect(client.invoke({ operationId: 'apps.list', arguments: { deep }, expectedRegistrationRevision: 1 } as never))
       .rejects.toMatchObject({ code: 'invalid_request' });
     await expect(client.invoke({
       operationId: 'apps.list',
+      expectedRegistrationRevision: 1,
       arguments: { value: 'x'.repeat(RUNTIME_CONTROL_MAX_WIRE_STRING_LENGTH + 1) },
     })).rejects.toMatchObject({ code: 'invalid_request' });
     await expect(client.invoke({
       operationId: 'apps.list',
+      expectedRegistrationRevision: 1,
       arguments: { values: Array.from({ length: RUNTIME_CONTROL_MAX_WIRE_COLLECTION_LENGTH + 1 }, () => null) },
     })).rejects.toMatchObject({ code: 'invalid_request' });
     const nodesPerEntry = 5;
     const nodeHeavy = Array.from({ length: Math.ceil(RUNTIME_CONTROL_MAX_WIRE_NODES / nodesPerEntry) }, () => ({
       a: 1, b: 2, c: 3, d: 4,
     }));
-    await expect(client.invoke({ operationId: 'apps.list', arguments: { nodeHeavy } }))
+    await expect(client.invoke({ operationId: 'apps.list', arguments: { nodeHeavy }, expectedRegistrationRevision: 1 }))
       .rejects.toMatchObject({ code: 'invalid_request' });
     expect(postMessage).not.toHaveBeenCalled();
     client.close();
@@ -461,7 +587,11 @@ describe('RuntimeControlClient', () => {
     const describeRequest = requests[1]!;
 
     dispatch(response(describeRequest.requestId, 'list', { revision: 99, operations: [] }));
-    dispatch(response(describeRequest.requestId, 'describe', descriptor()));
+    dispatch(response(describeRequest.requestId, 'describe', {
+      revision: 1,
+      registrationRevision: 1,
+      descriptor: descriptor(),
+    }));
     dispatch(response(listRequest.requestId, 'list', { revision: 88, operations: [] }), {
       source: {} as WindowProxy,
     });
@@ -473,7 +603,11 @@ describe('RuntimeControlClient', () => {
     dispatch(response(listRequest.requestId, 'list', { revision: 500, operations: [] }));
 
     await expect(listed).resolves.toMatchObject({ revision: 1 });
-    await expect(described).resolves.toMatchObject({ id: 'apps.list' });
+    await expect(described).resolves.toMatchObject({
+      revision: 1,
+      registrationRevision: 1,
+      descriptor: { id: 'apps.list' },
+    });
     expect(new Set(requests.map(request => request.requestId)).size).toBe(2);
     expect(JSON.stringify(requests)).not.toMatch(/caller|appId|windowId|role|capability|owner|confirmation/);
 
@@ -481,8 +615,8 @@ describe('RuntimeControlClient', () => {
     const third = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
     expect(third.requestId).not.toBe(listRequest.requestId);
     expect(third.requestId).not.toBe(describeRequest.requestId);
-    dispatch(response(third.requestId, 'resolve', { revision: 1, descriptor: descriptor() }));
-    await expect(resolved).resolves.toMatchObject({ descriptor: { id: 'apps.list' } });
+    dispatch(response(third.requestId, 'resolve', { revision: 1, registrationRevision: 1, descriptor: descriptor() }));
+    await expect(resolved).resolves.toMatchObject({ registrationRevision: 1, descriptor: { id: 'apps.list' } });
     client.close();
   });
 
@@ -508,7 +642,10 @@ describe('RuntimeControlClient', () => {
     } satisfies RuntimeControlEvent);
     expect(revisions).toEqual([1, 2]);
 
-    const invocationPromise = client.invoke({ operationId: 'apps.list', arguments: {} });
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
+    const invocationPromise = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
     const invokeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
     dispatch(response(invokeRequest.requestId, 'invoke', { invocationId: 'host-1', cancellable: true }));
     const invocation = await invocationPromise;
@@ -546,7 +683,7 @@ describe('RuntimeControlClient', () => {
     const unsubscribeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
     dispatch(response(unsubscribeRequest.requestId, 'unsubscribeRegistry', { unsubscribed: true }));
     await unsubscribe;
-    expect(postMessage).toHaveBeenCalledTimes(4);
+    expect(postMessage).toHaveBeenCalledTimes(5);
     client.close();
   });
 
@@ -562,5 +699,272 @@ describe('RuntimeControlClient', () => {
     await expect(pending).rejects.toMatchObject({ code: 'disconnected' });
     expect(remove).toHaveBeenCalledWith('message', expect.any(Function));
     expect(() => client.list()).toThrow(RuntimeControlClientError);
+  });
+
+  it('releases acknowledged cancellable handles and registry subscriptions despite saturated local capacity', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    let nextId = 0;
+    const client = new RuntimeControlClient({
+      maxPending: 1,
+      requestIdFactory: () => `close-release-${++nextId}`,
+    });
+
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
+    const invocationPromise = client.invoke({
+      operationId: 'apps.list',
+      arguments: {},
+      expectedRegistrationRevision: selected.registrationRevision,
+    });
+    const invokeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
+    dispatch(response(invokeRequest.requestId, 'invoke', { invocationId: 'close-cancellable', cancellable: true }));
+    const invocation = await invocationPromise;
+    const invocationResult = invocation.result.catch(error => error);
+
+    const subscriptionPromise = client.subscribeRegistry(() => {});
+    const subscribeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
+    dispatch(response(subscribeRequest.requestId, 'subscribeRegistry', {
+      subscriptionId: 'close-registry', snapshot: { revision: 1, operations: [] },
+    }));
+    await subscriptionPromise;
+
+    const saturated = client.list().catch(error => error);
+    postMessage.mockImplementation(message => {
+      if ((message as RuntimeControlRequest).method === 'cancel') {
+        client.close();
+        throw new Error('transport closed');
+      }
+    });
+    client.close();
+    client.close();
+
+    const releaseRequests = postMessage.mock.calls
+      .map(([message]) => message as RuntimeControlRequest)
+      .filter(message => ['cancel', 'unsubscribeInvocation', 'unsubscribeRegistry'].includes(message.method));
+    expect(releaseRequests).toEqual(expect.arrayContaining([
+      expect.objectContaining({ method: 'cancel', payload: { invocationId: 'close-cancellable' } }),
+      expect.objectContaining({ method: 'unsubscribeInvocation', payload: { invocationId: 'close-cancellable' } }),
+      expect.objectContaining({ method: 'unsubscribeRegistry', payload: { subscriptionId: 'close-registry' } }),
+    ]));
+    expect(releaseRequests).toHaveLength(3);
+    expect(postMessage.mock.calls.filter(([message]) => (message as RuntimeControlRequest).method === 'invoke')).toHaveLength(1);
+    await expect(invocationResult).resolves.toMatchObject({ code: 'disconnected' });
+    await expect(saturated).resolves.toMatchObject({ code: 'disconnected' });
+  });
+
+  it('preserves non-cancellable owner work while releasing its acknowledged stream on close', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    let nextId = 0;
+    const client = new RuntimeControlClient({ requestIdFactory: () => `close-noncancellable-${++nextId}` });
+    const described = client.describe('apps.list');
+    replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0]);
+    const selected = (await described)!;
+    const invocationPromise = client.invoke({
+      operationId: 'apps.list',
+      arguments: {},
+      expectedRegistrationRevision: selected.registrationRevision,
+    });
+    const invokeRequest = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
+    dispatch(response(invokeRequest.requestId, 'invoke', { invocationId: 'close-noncancellable', cancellable: false }));
+    const invocation = await invocationPromise;
+    const invocationResult = invocation.result.catch(error => error);
+
+    client.close();
+
+    const methods = postMessage.mock.calls.map(([message]) => (message as RuntimeControlRequest).method);
+    expect(methods).not.toContain('cancel');
+    expect(methods.filter(method => method === 'unsubscribeInvocation')).toHaveLength(1);
+    expect(methods.filter(method => method === 'invoke')).toHaveLength(1);
+    await expect(invocationResult).resolves.toMatchObject({ code: 'disconnected' });
+  });
+});
+
+describe('strict invoke boundary and explicit stale retry', () => {
+  it.each(['missing', undefined, null, 0, -1, 1.5, NaN, Infinity, '7'])('rejects invalid selected revision %s before postMessage', async revision => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    const client = new RuntimeControlClient({ maxInvocations: 1 });
+    const request = { operationId: 'apps.list', arguments: {}, ...(revision === 'missing' ? {} : { expectedRegistrationRevision: revision }) };
+    const rejected = client.invoke(request as never).catch(error => error);
+    try {
+      await Promise.resolve();
+      expect(postMessage).not.toHaveBeenCalled();
+      expect(await rejected).toMatchObject({ code: 'invalid_request' });
+      const described = client.describe('apps.list');
+      replyToDescribeRequest(postMessage.mock.calls.at(-1)?.[0], 7);
+      const selected = (await described)!;
+      const pending = client.invoke({ operationId: 'apps.list', arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
+      const sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+      expect(sent).toMatchObject({ method: 'invoke', payload: { expectedRegistrationRevision: 7 } });
+      dispatch(errorResponse(sent.requestId, 'invoke'));
+      await expect(pending).rejects.toMatchObject({ code: 'host_error' });
+    } finally { client.close(); await rejected; }
+  });
+  it('settles stale results without replay, including after explicit rediscovery', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    const client = new RuntimeControlClient();
+    const described = client.describe('apps.list');
+    let sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+    dispatch(response(sent.requestId, 'describe', { revision: 40, registrationRevision: 7, descriptor: descriptor() }));
+    const selected = (await described)!;
+    const pending = client.invoke({ operationId: selected.descriptor.id, arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
+    sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+    expect(sent).toMatchObject({ payload: { expectedRegistrationRevision: 7 } });
+    dispatch(response(sent.requestId, 'invoke', { invocationId: 'stale-once', cancellable: false }));
+    const handle = await pending;
+    dispatch({ protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation-result', invocationId: 'stale-once', snapshot: {
+      id: 'stale-once', operationId: 'apps.list', operationRevision: 8, status: 'failed', cancellable: false, startedAt: 1, completedAt: 2, progress: [],
+      error: { code: 'stale_descriptor', message: 'Descriptor changed.', details: { revision: 41, guidance: 'Rediscover and retry explicitly.' } },
+    } });
+    await expect(handle.result).resolves.toMatchObject({ status: 'failed', error: { code: 'stale_descriptor' } });
+    const refreshed = client.describe('apps.list');
+    sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+    dispatch(response(sent.requestId, 'describe', { revision: 41, registrationRevision: 8, descriptor: descriptor() }));
+    const next = (await refreshed)!;
+    await Promise.resolve();
+    expect(postMessage.mock.calls.filter(([request]) => request.method === 'invoke')).toHaveLength(1);
+    const retry = client.invoke({ operationId: next.descriptor.id, arguments: {}, expectedRegistrationRevision: next.registrationRevision });
+    sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+    expect(sent).toMatchObject({ method: 'invoke', payload: { expectedRegistrationRevision: 8 } });
+    expect(postMessage.mock.calls.filter(([request]) => request.method === 'invoke')).toHaveLength(2);
+    dispatch(errorResponse(sent.requestId, 'invoke'));
+    await expect(retry).rejects.toMatchObject({ code: 'host_error' }); client.close();
+  });
+
+  it('keeps finite missing-pubkey recovery machine-readable until one explicit corrected invoke', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    const client = new RuntimeControlClient();
+    try {
+      const describe = client.describe('feed.user.add');
+      let sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+      expect(sent).toMatchObject({ method: 'describe', payload: { operationId: 'feed.user.add' } });
+      dispatch(response(sent.requestId, 'describe', {
+        revision: 71,
+        registrationRevision: 19,
+        descriptor: descriptor('feed.user.add'),
+      }));
+      const selected = (await describe)!;
+
+      const invalid = client.invoke({
+        operationId: selected.descriptor.id, arguments: {}, expectedRegistrationRevision: selected.registrationRevision,
+      });
+      sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+      dispatch(response(sent.requestId, 'invoke', { invocationId: 'missing-pubkey', cancellable: false }));
+      const invalidHandle = await invalid;
+      dispatch({
+        protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation-result',
+        invocationId: 'missing-pubkey', snapshot: {
+          id: 'missing-pubkey', operationId: 'feed.user.add', operationRevision: 19, status: 'failed', cancellable: false,
+          startedAt: 1, completedAt: 2, progress: [],
+          error: {
+            code: 'invalid_arguments', message: 'Input validation failed', details: [{
+              code: 'missing_required', message: 'Value is required', path: 'arguments.pubkey', constraint: 'required',
+              recovery: { guidance: 'Provide the required value (resource nostr-pubkey).', retry: 'after-correction' },
+            }],
+          },
+        },
+      });
+      const failed = await invalidHandle.result;
+      expect(failed).toMatchObject({
+        status: 'failed', error: { code: 'invalid_arguments', details: [expect.objectContaining({
+          code: 'missing_required', path: 'arguments.pubkey', constraint: 'required',
+          recovery: { guidance: 'Provide the required value (resource nostr-pubkey).', retry: 'after-correction' },
+        })] },
+      });
+      const issue = (failed.error?.details as Array<Record<string, unknown>> | undefined)?.[0];
+      expect(issue).not.toHaveProperty('start');
+      expect(issue).not.toHaveProperty('end');
+      expect(issue).not.toHaveProperty('column');
+      expect(JSON.stringify(failed)).not.toContain('79be667e');
+      expect(postMessage.mock.calls.filter(([request]) => (request as RuntimeControlRequest).method === 'invoke')).toHaveLength(1);
+
+      const validPubkey = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+      const corrected = client.invoke({
+        operationId: selected.descriptor.id,
+        arguments: { pubkey: validPubkey },
+        expectedRegistrationRevision: selected.registrationRevision,
+      });
+      sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+      expect(sent).toMatchObject({ method: 'invoke', payload: { arguments: { pubkey: validPubkey }, expectedRegistrationRevision: 19 } });
+      expect(postMessage.mock.calls.filter(([request]) => (request as RuntimeControlRequest).method === 'invoke')).toHaveLength(2);
+      dispatch(response(sent.requestId, 'invoke', { invocationId: 'corrected-pubkey', cancellable: false }));
+      const correctedHandle = await corrected;
+      dispatch({
+        protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation-result',
+        invocationId: 'corrected-pubkey', snapshot: {
+          id: 'corrected-pubkey', operationId: 'feed.user.add', operationRevision: 19, status: 'succeeded', cancellable: false,
+          startedAt: 3, completedAt: 4, progress: [], value: { saved: true },
+        },
+      });
+      await expect(correctedHandle.result).resolves.toMatchObject({ status: 'succeeded' });
+    } finally {
+      client.close();
+    }
+  });
+
+  it('does not replay forbidden, controller failure, or cancelled snapshots without a new caller request', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    const cases = [
+      { name: 'forbidden', snapshot: { status: 'failed', error: { code: 'forbidden', message: 'Access denied.' } }, code: 'forbidden' },
+      { name: 'controller-failure', snapshot: { status: 'failed', error: { code: 'controller_error', message: 'Controller failed.' } }, code: 'controller_error' },
+      { name: 'cancelled', snapshot: { status: 'cancelled' }, code: undefined },
+    ] as const;
+
+    for (const scenario of cases) {
+      postMessage.mockClear();
+      const client = new RuntimeControlClient();
+      try {
+        const describe = client.describe('apps.list');
+        let sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+        dispatch(response(sent.requestId, 'describe', { revision: 1, registrationRevision: 1, descriptor: descriptor() }));
+        const selected = (await describe)!;
+        const invoke = client.invoke({ operationId: selected.descriptor.id, arguments: {}, expectedRegistrationRevision: selected.registrationRevision });
+        sent = postMessage.mock.calls.at(-1)![0] as RuntimeControlRequest;
+        const invocationId = `no-replay-${scenario.name}`;
+        dispatch(response(sent.requestId, 'invoke', { invocationId, cancellable: false }));
+        const handle = await invoke;
+        dispatch({
+          protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation-result', invocationId,
+          snapshot: {
+            id: invocationId, operationId: 'apps.list', operationRevision: 1, cancellable: false,
+            startedAt: 1, completedAt: 2, progress: [], ...scenario.snapshot,
+          },
+        });
+        const result = await handle.result;
+        expect(result.status).toBe(scenario.snapshot.status);
+        expect(result.error?.code).toBe(scenario.code);
+        await Promise.resolve();
+        expect(postMessage.mock.calls.filter(([request]) => (request as RuntimeControlRequest).method === 'invoke')).toHaveLength(1);
+      } finally {
+        client.close();
+      }
+    }
+  });
+
+  it('does not replay a rejected invoke transport request after a public describe', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation((request: unknown) => {
+      if (isRuntimeControlRequest(request) && request.method === 'describe') {
+        replyToDescribeRequest(request, 7);
+        return;
+      }
+      throw new Error('transport-private-detail');
+    });
+    const client = new RuntimeControlClient();
+    try {
+      const selected = await client.describe('apps.list');
+      if (!selected) throw new Error('fixture must describe a public operation');
+
+      await expect(client.invoke({
+        operationId: selected.descriptor.id,
+        arguments: {},
+        expectedRegistrationRevision: selected.registrationRevision,
+      })).rejects.toMatchObject({ code: 'host_error', message: 'Unable to send control request' });
+      await Promise.resolve();
+
+      const invokes = postMessage.mock.calls.map(([request]) => request as RuntimeControlRequest).filter(request => request.method === 'invoke');
+      expect(invokes).toHaveLength(1);
+    } finally {
+      client.close();
+    }
   });
 });

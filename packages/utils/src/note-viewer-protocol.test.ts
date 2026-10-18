@@ -61,17 +61,17 @@ describe('note viewer protocol helpers', () => {
     });
   });
 
-  it('builds an archetype-led note request and retains canonical no-handler identity', () => {
+  it('builds an archetype-led note request and accepts failures without required identity', () => {
     const request = createNoteViewerOpenIntentRequest({
       target: { type: 'event', id: 'a'.repeat(64) },
-    }, { convention: 'napplet:document/open' });
+    }, { convention: 'napplet:note/open' });
 
     expect(request).toMatchObject({
       archetype: 'note',
-      convention: 'napplet:document/open',
+      convention: 'napplet:note/open',
       payload: { target: { type: 'event', id: 'a'.repeat(64) } },
     });
-    expect(request).not.toHaveProperty('action');
+    expect(request).toHaveProperty('action', 'open');
     expect(createNoteViewerOpenIntentRequest({ target: { type: 'event', id: 'A'.repeat(64) } })).toBeNull();
     expect(parseNoteViewerOpenIntentResult({
       ok: false,
@@ -79,7 +79,7 @@ describe('note viewer protocol helpers', () => {
       action: 'open',
       handled: false,
       error: 'no handler',
-    })).toMatchObject({ archetype: 'note', action: 'open', handled: false });
+    })).toEqual({ ok: false, error: 'no handler' });
     expect(parseNoteViewerOpenIntentResult({ ok: false, archetype: 'note', handled: false })).toBeNull();
   });
 

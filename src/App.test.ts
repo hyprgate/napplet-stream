@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mount, tick, unmount } from 'svelte';
 import type { NostrEvent } from 'nostr-tools/core';
 import { inc, relay } from '@napplet/sdk';
+import { controlRuntimePlayback, requestRuntimePlayback, subscribeRuntimePlayback } from '@hyprgate/utils';
 import App from './App.svelte';
 
 type RelayEventResult = { event: NostrEvent };
@@ -117,5 +118,84 @@ describe('stream app live discovery', () => {
     );
 
     unmount(component);
+  });
+
+  it.each(['idle', null] as const)('clears a stopped/released stream and creates a fresh session on the next click (%s)', async (status) => {
+    const component = mount(App, { target: document.body });
+    await tick();
+    const eventCallback = vi.mocked(relay.subscribe).mock.calls[0]![1] as (result: RelayEventResult) => void;
+    eventCallback({ event: makeStreamEvent('takeover', 'Takeover Stream') });
+    await tick();
+    const card = document.querySelector<HTMLElement>('[aria-label="Watch Takeover Stream"]')!;
+    card.click();
+    await vi.waitFor(() => expect(subscribeRuntimePlayback).toHaveBeenCalled());
+    await tick();
+    expect(document.body.textContent).toContain('selected: Takeover Stream');
+    const onState = vi.mocked(subscribeRuntimePlayback).mock.calls[0]![1];
+    const subscription = vi.mocked(subscribeRuntimePlayback).mock.results[0]!.value;
+    onState(status === null ? null : {
+      sessionId: 'stream-session', windowId: '', state: status,
+      position: 0, duration: null, volume: 1, muted: false,
+    });
+    await tick();
+    expect(card.classList.contains('active')).toBe(false);
+    expect(document.body.textContent).not.toContain('selected: Takeover Stream');
+    expect(subscription.close).toHaveBeenCalled();
+
+    const [, onContext] = vi.mocked(inc.on).mock.calls.find(([topic]) => topic === 'stream:current-context-get')!;
+    onContext!({ topic: 'stream:current-context-get', sender: 'chat', payload: {} });
+    expect(inc.emit).toHaveBeenLastCalledWith('stream:current-context', JSON.stringify({
+      context: { streamAddr: null, title: null, chatRelays: [] }, payload: {},
+    }));
+    card.click();
+    await vi.waitFor(() => expect(requestRuntimePlayback).toHaveBeenCalledTimes(2));
+    expect(controlRuntimePlayback).not.toHaveBeenCalled();
+    await unmount(component);
+  });
+
+  it('keeps a paused stream selected so the next click resumes its retained session', async () => {
+    const component = mount(App, { target: document.body });
+    await tick();
+    const eventCallback = vi.mocked(relay.subscribe).mock.calls[0]![1] as (result: RelayEventResult) => void;
+    eventCallback({ event: makeStreamEvent('paused', 'Paused Stream') });
+    await tick();
+    const card = document.querySelector<HTMLElement>('[aria-label="Watch Paused Stream"]')!;
+    card.click();
+    await vi.waitFor(() => expect(subscribeRuntimePlayback).toHaveBeenCalled());
+    vi.mocked(subscribeRuntimePlayback).mock.calls[0]![1]({
+      sessionId: 'stream-session', windowId: '', state: 'paused',
+      position: 10, duration: null, volume: 0.5, muted: false,
+    });
+    await tick();
+    expect(card.classList.contains('active')).toBe(true);
+    expect(document.body.textContent).toContain('selected: Paused Stream');
+    expect(document.body.textContent).not.toContain('playing: Paused Stream');
+    card.click();
+    await vi.waitFor(() => expect(controlRuntimePlayback).toHaveBeenCalledWith('stream-session', 'play'));
+    expect(requestRuntimePlayback).toHaveBeenCalledTimes(1);
+    await unmount(component);
+  });
+
+  it('keeps the selected stream while autoplay is queued before its video element attaches', async () => {
+    vi.mocked(requestRuntimePlayback).mockResolvedValueOnce({ sessionId: 'queued-stream' });
+    const component = mount(App, { target: document.body });
+    await tick();
+    const eventCallback = vi.mocked(relay.subscribe).mock.calls[0]![1] as (result: RelayEventResult) => void;
+    eventCallback({ event: makeStreamEvent('queued', 'Queued Stream') });
+    await tick();
+    const card = document.querySelector<HTMLElement>('[aria-label="Watch Queued Stream"]')!;
+    card.click();
+    await vi.waitFor(() => expect(subscribeRuntimePlayback).toHaveBeenCalled());
+    const subscription = vi.mocked(subscribeRuntimePlayback).mock.results[0]!.value;
+    subscription.close.mockClear();
+    vi.mocked(subscribeRuntimePlayback).mock.calls[0]![1]({
+      sessionId: 'queued-stream', windowId: '', state: 'loading',
+      position: 0, duration: null, volume: 1, muted: false,
+    });
+    await tick();
+    expect(card.classList.contains('active')).toBe(true);
+    expect(document.body.textContent).toContain('selected: Queued Stream');
+    expect(subscription.close).not.toHaveBeenCalled();
+    await unmount(component);
   });
 });

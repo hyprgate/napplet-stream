@@ -5,7 +5,7 @@ import {
   parseAppOpenIntentResult,
   parseAppOpenPayload,
 } from './app-store-open-protocol.js';
-import type { IntentRequest as PublicIntentRequest, IntentResult as PublicIntentResult } from '@napplet/nap/intent';
+import type { IntentRequest as PublicIntentRequest } from '@napplet/nap/intent';
 
 describe('app store open protocol', () => {
   it('defines the shell-routed app open topic', () => {
@@ -38,12 +38,14 @@ describe('app store open protocol', () => {
     expect(parseAppOpenPayload({ dTag: 'feed', author: 'not-a-pubkey' })).toBeNull();
   });
 
-  it('builds an archetype-led request and preserves an explicit unhandled result', () => {
-    const request = createAppOpenIntentRequest('feed', { dTag: 'feed' }, { behavior: { newWindow: true } });
+  it('builds an archetype-led request and preserves a pre-acceptance failure', () => {
+    const request = createAppOpenIntentRequest('feed', { dTag: 'feed' }, { behavior: { reuse: false } });
     expect(request).toEqual({
       archetype: 'feed',
+      action: 'open',
+      convention: 'napplet:feed/open',
       payload: { dTag: 'feed' },
-      behavior: { newWindow: true },
+      behavior: { reuse: false },
     });
     const publicRequest: PublicIntentRequest = request!;
     expect(publicRequest.archetype).toBe('feed');
@@ -56,9 +58,8 @@ describe('app store open protocol', () => {
       handled: false,
       error: 'no handler',
     });
-    expect(result).toMatchObject({ archetype: 'feed', action: 'open', handled: false });
-    const publicResult: PublicIntentResult = result!;
-    expect(publicResult.handled).toBe(false);
+    expect(result).toEqual({ ok: false, error: 'no handler' });
+    expect(parseAppOpenIntentResult({ ok: true })).toEqual({ ok: true });
     expect(parseAppOpenIntentResult({ ok: false, archetype: 'feed', handled: false })).toBeNull();
   });
 });

@@ -31,7 +31,12 @@ describe('note content parsing', () => {
   it('parses NIP-19 profile, event, and address references', () => {
     const npub = nip19.npubEncode(PUBKEY);
     const nprofile = nip19.nprofileEncode({ pubkey: PUBKEY, relays: ['wss://relay.example'] });
-    const nevent = nip19.neventEncode({ id: EVENT_ID, relays: ['wss://relay.example'] });
+    const nevent = nip19.neventEncode({
+      id: EVENT_ID,
+      author: PUBKEY,
+      kind: 1,
+      relays: ['wss://relay.example'],
+    });
     const naddr = nip19.naddrEncode({
       kind: 30023,
       pubkey: ADDRESS_PUBKEY,
@@ -41,7 +46,14 @@ describe('note content parsing', () => {
 
     expect(extractNoteContentEmbeds(`nostr:${npub} ${nprofile} ${nevent} ${naddr}`)).toEqual([
       { type: 'profile', value: PUBKEY, source: `nostr:${npub}` },
-      { type: 'event', value: EVENT_ID, source: `nostr:${nevent}` },
+      {
+        type: 'event',
+        value: EVENT_ID,
+        source: `nostr:${nevent}`,
+        author: PUBKEY,
+        kind: 1,
+        relays: ['wss://relay.example'],
+      },
       { type: 'address', value: `30023:${ADDRESS_PUBKEY}:article`, source: `nostr:${naddr}` },
     ]);
 

@@ -79,25 +79,26 @@ describe('nfeedToFeedPayload', () => {
 });
 
 describe('canonical feed and profile intent requests', () => {
-  it('builds a typed profile request without inventing an action', () => {
+  it('builds a typed profile request with a normalized open action', () => {
     const request = createProfileIntentRequest(
       { pubkey: 'a'.repeat(64) },
-      { convention: 'napplet:document/open', behavior: { newWindow: true } },
+      { convention: 'napplet:profile/open', behavior: { reuse: false } },
     );
 
     expect(request).toEqual({
       archetype: 'profile',
-      convention: 'napplet:document/open',
+      action: 'open',
+      convention: 'napplet:profile/open',
       payload: { pubkey: 'a'.repeat(64) },
-      behavior: { newWindow: true },
+      behavior: { reuse: false },
     });
-    expect(request).not.toHaveProperty('action');
+    expect(request).toHaveProperty('action', 'open');
 
     const publicRequest: PublicIntentRequest = request!;
     expect(publicRequest.archetype).toBe('profile');
   });
 
-  it('builds a feed request from the existing validated payload and only includes requested dimensions', () => {
+  it('builds a feed request from the existing validated payload and normalizes the convention from the requested action', () => {
     const request = createFeedIntentRequest(
       { filters: [{ kinds: [1] }], origin: 'outbox' },
       { action: 'refresh', handler: 'feed-handler' },
@@ -106,6 +107,7 @@ describe('canonical feed and profile intent requests', () => {
     expect(request).toEqual({
       archetype: 'feed',
       action: 'refresh',
+      convention: 'napplet:feed/refresh',
       handler: 'feed-handler',
       payload: { filters: [{ kinds: [1] }], origin: 'outbox' },
     });

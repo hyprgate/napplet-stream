@@ -30,6 +30,28 @@ beforeEach(() => {
 });
 
 describe('runtime-player NAP-MEDIA path', () => {
+  it('surfaces a NAP-MEDIA rejection without retrying through a different playback protocol', async () => {
+    vi.useFakeTimers();
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => {});
+    testWindow().napplet = {
+      shell: { supports: () => true },
+      media: {
+        createSession: vi.fn(async () => ({ owner: 'shell', error: 'source blocked' })),
+        destroySession: vi.fn(), sendCommand: vi.fn(), onState: vi.fn(),
+      },
+    };
+    try {
+      const rejected = expect(requestRuntimePlayback({ url: 'https://media.example.test/track.mp3', kind: 'audio' }))
+        .rejects.toThrow('source blocked');
+      await vi.runAllTimersAsync();
+      await rejected;
+      expect(postMessage).not.toHaveBeenCalled();
+    } finally {
+      postMessage.mockRestore();
+      vi.useRealTimers();
+    }
+  });
+
   it('requests shell-owned playback through NAP-MEDIA when available', async () => {
     const media = {
       createSession: vi.fn(async () => ({ sessionId: 'media-1', owner: 'shell' })),
@@ -267,5 +289,55 @@ describe('runtime-player NAP-MEDIA path', () => {
 
     await releaseRuntimePlayback('media-2');
     expect(media.destroySession).toHaveBeenCalledWith('media-2');
+  });
+
+  it('keeps stopped NAP-MEDIA sessions resumable without inferring deletion', async () => {
+    let onState: (state: { status: 'stopped' | 'paused' | 'playing' }) => void = () => {};
+    const media = {
+      createSession: vi.fn(async () => ({ sessionId: 'retained-media', owner: 'shell' })),
+      destroySession: vi.fn(), sendCommand: vi.fn(),
+      onState: vi.fn((_id: string, callback: typeof onState) => {
+        onState = callback;
+        return { close: vi.fn() };
+      }),
+    };
+    testWindow().napplet = { media };
+    await requestRuntimePlayback({ url: 'https://media.example.test/live.m3u8', kind: 'hls' });
+    const handler = vi.fn();
+    const subscription = subscribeRuntimePlayback('retained-media', handler);
+    onState({ status: 'stopped' });
+    expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ sessionId: 'retained-media', state: 'idle' }));
+    onState({ status: 'paused' });
+    expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ state: 'paused' }));
+    await controlRuntimePlayback('retained-media', 'play');
+    expect(media.sendCommand).toHaveBeenLastCalledWith('retained-media', 'play', undefined);
+    expect(media.destroySession).not.toHaveBeenCalled();
+    subscription.close();
+    await releaseRuntimePlayback('retained-media');
+  });
+
+  it('delivers a legacy deletion only to the released session subscriber', async () => {
+    const post = vi.spyOn(window.parent, 'postMessage').mockImplementation((message) => {
+      const envelope = message as { id: string; type: string };
+      queueMicrotask(() => window.dispatchEvent(new MessageEvent('message', {
+        source: window.parent,
+        data: { type: `${envelope.type}.result`, id: envelope.id, sessionId: 'legacy-release', ok: true },
+      })));
+    });
+    await requestRuntimePlayback({ url: 'https://media.example.test/live.m3u8', kind: 'hls' });
+    const released = vi.fn();
+    const untouched = vi.fn();
+    const subscription = subscribeRuntimePlayback('legacy-release', released);
+    const other = subscribeRuntimePlayback('another-session', untouched);
+    window.dispatchEvent(new MessageEvent('message', {
+      source: window.parent,
+      data: { type: 'player.state', sessionId: 'legacy-release', state: null },
+    }));
+    expect(released).toHaveBeenCalledWith(null);
+    expect(untouched).not.toHaveBeenCalled();
+    subscription.close();
+    other.close();
+    await releaseRuntimePlayback('legacy-release');
+    post.mockRestore();
   });
 });

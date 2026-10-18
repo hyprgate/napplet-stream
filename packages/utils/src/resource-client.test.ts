@@ -26,6 +26,10 @@ function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(r
   return { promise, resolve, reject };
 }
 
+function resourceRequests(urls: readonly string[]): Array<{ url: string }> {
+  return urls.map((url) => ({ url }));
+}
+
 function stubObjectUrls(
   resolvedUrls: string[] = [],
 ): { createObjectURL: ReturnType<typeof vi.fn>; revokeObjectURL: ReturnType<typeof vi.fn> } {
@@ -58,7 +62,7 @@ describe('resource-client', () => {
     clearResourceObjectUrlCache();
   });
 
-  it('routes remote absolute URLs through NUB-RESOURCE only', () => {
+  it('routes remote absolute URLs through NAP-RESOURCE only', () => {
     expect(shouldUseResourceNub('https://example.com/avatar.png')).toBe(true);
     expect(shouldUseResourceNub('nostr:nevent1example')).toBe(true);
     expect(shouldUseResourceNub('data:image/png;base64,AAAA')).toBe(false);
@@ -162,10 +166,10 @@ describe('resource-client', () => {
     ], (source, url) => changes.push([source, url]));
     await Promise.resolve();
 
-    expect(resourceBytesMany).toHaveBeenCalledWith([
+    expect(resourceBytesMany).toHaveBeenCalledWith(resourceRequests([
       'https://example.com/a.png',
       'https://example.com/b.png',
-    ], expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    ]), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(resourceBytes).not.toHaveBeenCalled();
     expect(changes).toEqual([
       ['https://example.com/a.png', 'blob:batched-1'],
@@ -186,7 +190,7 @@ describe('resource-client', () => {
   it('chunks batched resource object URL resolution by requested size', async () => {
     stubObjectUrls();
     const sources = Array.from({ length: 23 }, (_, index) => `https://example.com/${index}.png`);
-    vi.mocked(resourceBytesMany).mockImplementation(async (chunk) => chunk.map((url) => ({
+    vi.mocked(resourceBytesMany).mockImplementation(async (chunk) => chunk.map(({ url }) => ({
       url,
       ok: true,
       blob: new Blob([url], { type: 'image/png' }),
@@ -200,17 +204,17 @@ describe('resource-client', () => {
     expect(resourceBytesMany).toHaveBeenCalledTimes(3);
     expect(resourceBytesMany).toHaveBeenNthCalledWith(
       1,
-      sources.slice(0, 10),
+      resourceRequests(sources.slice(0, 10)),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(resourceBytesMany).toHaveBeenNthCalledWith(
       2,
-      sources.slice(10, 20),
+      resourceRequests(sources.slice(10, 20)),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(resourceBytesMany).toHaveBeenNthCalledWith(
       3,
-      sources.slice(20),
+      resourceRequests(sources.slice(20)),
       expect.objectContaining({ signal: expect.any(AbortSignal) }),
     );
     expect(changes.map(([source]) => source)).toEqual(sources);
@@ -293,12 +297,13 @@ describe('resource-client', () => {
 
     resourceImage(img, 'https://example.com/thumb.jpg');
     await vi.waitFor(() => expect(resourceBytes).toHaveBeenCalledOnce());
-    await Promise.resolve();
+    await vi.waitFor(() => expect(img.dataset.resourceImageState).toBe('error'));
 
     expect(img.hasAttribute('src')).toBe(false);
+    expect(img.style.visibility).toBe('hidden');
   });
 
-  it('keeps remote images unset until resource bytes resolve', async () => {
+  it('keeps remote images visually hidden until the resolved bytes decode', async () => {
     stubObjectUrls(['blob:thumb']);
     const bytes = deferred<Blob>();
     vi.mocked(resourceBytes).mockReturnValueOnce(bytes.promise);
@@ -306,11 +311,19 @@ describe('resource-client', () => {
 
     resourceImage(img, 'https://example.com/thumb.jpg');
     expect(img.hasAttribute('src')).toBe(false);
+    expect(img.dataset.resourceImageState).toBe('loading');
+    expect(img.style.visibility).toBe('hidden');
 
     bytes.resolve(new Blob(['thumb'], { type: 'image/jpeg' }));
     await vi.waitFor(() => expect(img.getAttribute('src')).toBe('blob:thumb'));
+    expect(img.dataset.resourceImageState).toBe('loading');
+    expect(img.style.visibility).toBe('hidden');
+
+    img.dispatchEvent(new Event('load'));
 
     expect(resourceBytes).toHaveBeenCalledWith('https://example.com/thumb.jpg');
+    expect(img.dataset.resourceImageState).toBe('ready');
+    expect(img.style.visibility).toBe('');
   });
 
   it('retries resourceImage sidecar failures before leaving an image unresolved', async () => {
@@ -328,6 +341,32 @@ describe('resource-client', () => {
 
     expect(resourceBytes).toHaveBeenCalledTimes(2);
     expect(img.getAttribute('src')).toBe('blob:retry-thumb');
+    expect(img.dataset.resourceImageState).toBe('loading');
+
+    img.dispatchEvent(new Event('load'));
+    expect(img.dataset.resourceImageState).toBe('ready');
+    expect(img.style.visibility).toBe('');
+  });
+
+  it('hides decoded-image failures and retries remote resources without painting broken UI', async () => {
+    vi.useFakeTimers();
+    stubObjectUrls(['blob:invalid-avatar', 'blob:retry-avatar']);
+    vi.mocked(resourceBytes).mockResolvedValue(new Blob(['avatar'], { type: 'image/png' }));
+    const img = document.createElement('img');
+
+    resourceImage(img, 'https://example.com/avatar.png');
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(img.getAttribute('src')).toBe('blob:invalid-avatar');
+
+    img.dispatchEvent(new Event('error'));
+    expect(img.hasAttribute('src')).toBe(false);
+    expect(img.dataset.resourceImageState).toBe('error');
+    expect(img.style.visibility).toBe('hidden');
+
+    await vi.runOnlyPendingTimersAsync();
+    await Promise.resolve();
+    expect(img.getAttribute('src')).toBe('blob:retry-avatar');
   });
 
   it('shares a pending resource handle instead of duplicating thumbnail fetches', () => {
@@ -389,11 +428,18 @@ describe('resource-client', () => {
 
     expect(first.getAttribute('src')).toBe('blob:batched-1');
     expect(second.getAttribute('src')).toBe('blob:batched-2');
+    expect(first.dataset.resourceImageState).toBe('loading');
+    expect(second.style.visibility).toBe('hidden');
+
+    first.dispatchEvent(new Event('load'));
+    second.dispatchEvent(new Event('load'));
+    expect(first.dataset.resourceImageState).toBe('ready');
+    expect(second.style.visibility).toBe('');
     expect(resourceBytesMany).toHaveBeenCalledOnce();
-    expect(resourceBytesMany).toHaveBeenCalledWith([
+    expect(resourceBytesMany).toHaveBeenCalledWith(resourceRequests([
       'https://example.com/a.png',
       'https://example.com/b.png',
-    ], expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    ]), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(resourceBytes).not.toHaveBeenCalled();
 
     firstAction.destroy?.();
@@ -432,10 +478,10 @@ describe('resource-client', () => {
     await Promise.resolve();
 
     expect(resourceBytesMany).toHaveBeenCalledOnce();
-    expect(resourceBytesMany).toHaveBeenCalledWith([
+    expect(resourceBytesMany).toHaveBeenCalledWith(resourceRequests([
       'https://example.com/a.png',
       'https://example.com/b.png',
-    ], expect.objectContaining({ signal: expect.any(AbortSignal) }));
+    ]), expect.objectContaining({ signal: expect.any(AbortSignal) }));
     expect(first.getAttribute('src')).toBe('blob:batched-1');
     expect(second.getAttribute('src')).toBe('blob:batched-2');
 

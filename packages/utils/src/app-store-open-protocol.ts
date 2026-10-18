@@ -1,9 +1,7 @@
 import {
   createIntentRequest,
-  parseIntentResult,
   type IntentRequest,
   type IntentRequestOptions,
-  type IntentResult,
 } from '@hyprgate/types';
 
 export const APP_OPEN_TOPIC = 'app:open' as const;
@@ -81,7 +79,13 @@ export function createAppOpenIntentRequest(
   return app ? createIntentRequest({ archetype, ...options, payload: app }) : null;
 }
 
-/** Parse a canonical result so callers can distinguish handled and no-handler outcomes. */
-export function parseAppOpenIntentResult(value: unknown): IntentResult | null {
-  return parseIntentResult(value);
+/** Trusted host launch result. It does not claim a public catalog acceptance. */
+export type RuntimeAppOpenResult = { ok: true } | { ok: false; error: string };
+
+export function parseAppOpenIntentResult(value: unknown): RuntimeAppOpenResult | null {
+  if (!value || typeof value !== 'object') return null;
+  const result = value as { ok?: unknown; error?: unknown };
+  if (result.ok === true) return { ok: true };
+  return result.ok === false && typeof result.error === 'string' && result.error.trim()
+    ? { ok: false, error: result.error } : null;
 }

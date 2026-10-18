@@ -7,6 +7,7 @@ import {
   isRuntimeControlResponse,
   type ControlCompletionRequest,
   type ControlCompletionResult,
+  type ControlDescribedOperation,
   type ControlInvocationEvent,
   type ControlInvocationRequest,
   type ControlInvocationSnapshot,
@@ -67,6 +68,7 @@ interface PendingRequest {
 interface InvocationState {
   resolve: (snapshot: ControlInvocationSnapshot) => void;
   reject: (error: RuntimeControlClientError) => void;
+  cancellable: boolean;
   listeners: Set<(event: ControlInvocationEvent) => void>;
   history: ControlInvocationEvent[];
   lastSequence: number;
@@ -150,7 +152,7 @@ export class RuntimeControlClient {
     return this.request('list', {});
   }
 
-  describe(operationId: string): Promise<ControlOperationDescriptor | null> {
+  describe(operationId: string): Promise<ControlDescribedOperation | null> {
     return this.request('describe', { operationId });
   }
 
@@ -194,6 +196,7 @@ export class RuntimeControlClient {
     const state: InvocationState = {
       resolve: resolveResult,
       reject: rejectResult,
+      cancellable: response.cancellable,
       listeners: new Set(),
       history: [],
       lastSequence: -1,
@@ -259,6 +262,17 @@ export class RuntimeControlClient {
   close(): void {
     if (this.closed) return;
     this.closed = true;
+    const invocations = [...this.invocations.entries()];
+    const subscriptions = [...this.registrySubscriptions.keys()];
+    for (const [invocationId, invocation] of invocations) {
+      if (!invocation.settled && invocation.cancellable) {
+        this.bestEffortRelease('cancel', { invocationId });
+      }
+      this.bestEffortRelease('unsubscribeInvocation', { invocationId });
+    }
+    for (const subscriptionId of subscriptions) {
+      this.bestEffortRelease('unsubscribeRegistry', { subscriptionId });
+    }
     this.target.removeEventListener('message', this.onMessage);
     const error = new RuntimeControlClientError('disconnected', 'Runtime control client is closed');
     for (const pending of this.pending.values()) pending.reject(error);
@@ -313,6 +327,30 @@ export class RuntimeControlClient {
       return Promise.reject(new RuntimeControlClientError('host_error', 'Unable to send control request'));
     }
     return promise;
+  }
+
+  /**
+   * Closing cannot await host acknowledgement, but known host IDs can still receive
+   * existing cancellation/release messages before local transport state is discarded.
+   */
+  private bestEffortRelease<M extends 'cancel' | 'unsubscribeInvocation' | 'unsubscribeRegistry'>(
+    method: M,
+    payload: RuntimeControlMethodMap[M]['request'],
+  ): void {
+    try {
+      const request = {
+        protocol: RUNTIME_CONTROL_PROTOCOL,
+        version: RUNTIME_CONTROL_VERSION,
+        kind: 'request',
+        requestId: this.nextRequestId(),
+        method,
+        payload,
+      } as RuntimeControlRequest;
+      if (!isRuntimeControlRequest(request)) return;
+      this.parent.postMessage(request, this.origin);
+    } catch {
+      // Local closure must release every remaining resource even if one send fails.
+    }
   }
 
   private nextRequestId(): string {

@@ -23,12 +23,12 @@ import {
   serializeSelectedMentions,
   type SelectedMention,
 } from './composer';
-import { relay, storage } from '@napplet/sdk';
+import { outbox, storage } from '@napplet/sdk';
 import * as nip19 from 'nostr-tools/nip19';
 
 vi.mock('@napplet/sdk', () => ({
-  relay: {
-    publish: vi.fn().mockResolvedValue({ id: 'note' }),
+  outbox: {
+    publish: vi.fn().mockResolvedValue({ ok: true, eventId: 'note' }),
   },
   storage: {
     getItem: vi.fn().mockResolvedValue(''),
@@ -68,13 +68,22 @@ describe('composer utilities', () => {
     }
   });
 
-  it('publishes text notes through SDK relay', async () => {
+  it('publishes text notes through the outbox-aware SDK rail', async () => {
     await publishTextNote('hello', [['t', 'nostr']]);
-    expect(vi.mocked(relay.publish)).toHaveBeenCalledWith(expect.objectContaining({
+    expect(vi.mocked(outbox.publish)).toHaveBeenCalledWith(expect.objectContaining({
       kind: 1,
       content: 'hello',
       tags: [['t', 'nostr']],
     }));
+  });
+
+  it('surfaces an unsuccessful outbox publish result', async () => {
+    vi.mocked(outbox.publish).mockResolvedValueOnce({
+      ok: false,
+      error: 'no writable relay accepted the note',
+    });
+
+    await expect(publishTextNote('hello')).rejects.toThrow('no writable relay accepted the note');
   });
 
   it('parses compose reply params and builds reply publish tags', () => {

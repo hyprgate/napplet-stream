@@ -1,10 +1,13 @@
-import type { IntentRequest, IntentResult, NostrEvent, NostrFilter } from '@hyprgate/types';
+import type { IntentRequest, NostrEvent, NostrFilter } from '@hyprgate/types';
+import type { RuntimeAppOpenResult } from './app-store-open-protocol.js';
 import type {
   ControlCompletionRequest,
   ControlCompletionResult,
+  ControlDescribedOperation,
   ControlErrorCode,
   ControlInvocationRequest,
   ControlInvocationSnapshot,
+  ControlJsonValue,
   ControlOperationDescriptor,
   ControlRegistrySnapshot,
   ControlResolveRequest,
@@ -49,19 +52,17 @@ export interface RuntimeAppletRelay {
 export interface RuntimeAppletIdentity {
   getPublicKey(): Promise<string>;
   getProfile(): Promise<unknown>;
+  /**
+   * Observe the current identity's shared profile rail. The host stops this
+   * subscription when the runtime applet closes or the identity session changes.
+   */
+  subscribeProfile(listener: (profile: unknown | null) => void): RuntimeAppletSubscription;
   getFollows(): Promise<string[]>;
   getRelays(): Promise<Record<string, { read: boolean; write: boolean }>>;
 }
 
-export interface RuntimeAppletStorage {
-  keys(): Promise<string[]>;
-  getItem(key: string): Promise<string | null>;
-  setItem(key: string, value: string): Promise<void>;
-  removeItem(key: string): Promise<void>;
-}
-
 export interface RuntimeAppletIntent {
-  invoke(request: IntentRequest): Promise<IntentResult>;
+  invoke(request: IntentRequest): Promise<RuntimeAppOpenResult>;
 }
 
 /** A positional argument accepted by a shell-registered runtime command. */
@@ -101,7 +102,7 @@ export interface RuntimeAppletCommands {
 
 export interface RuntimeAppletControls {
   list(): Promise<ControlRegistrySnapshot>;
-  describe(operationId: string): Promise<ControlOperationDescriptor | null>;
+  describe(operationId: string): Promise<ControlDescribedOperation | null>;
   resolve(request: ControlResolveRequest): Promise<ControlResolvedOperation | null>;
   complete(request: ControlCompletionRequest): Promise<ControlCompletionResult>;
   invoke(request: ControlInvocationRequest): Promise<RuntimeControlInvocationHandle>;
@@ -127,32 +128,15 @@ export class RuntimeAppletCommandError extends Error {
 export interface RuntimeAppletApi {
   identity: RuntimeAppletIdentity;
   relay: RuntimeAppletRelay;
-  storage: RuntimeAppletStorage;
   intent: RuntimeAppletIntent;
   control: RuntimeAppletControls;
   commands: RuntimeAppletCommands;
 }
 
 export interface RuntimeAppletHostApi {
-  identity: RuntimeAppletIdentity;
-  relay: {
-    subscribe(
-      filters: NostrFilter[],
-      onEvent: (result: RuntimeAppletRelayResult) => void,
-      onEose?: () => void,
-      options?: RuntimeAppletSubscribeOptions,
-    ): RuntimeAppletSubscription;
-    query(filters: NostrFilter[]): Promise<RuntimeAppletRelayResult[]>;
-    publish(event: RuntimeEventTemplate | NostrEvent, options?: RuntimeAppletPublishOptions): Promise<NostrEvent>;
-  };
-  storage: {
-    keys(appId: string): Promise<string[]>;
-    getItem(appId: string, key: string): Promise<string | null>;
-    setItem(appId: string, key: string, value: string): Promise<void>;
-    removeItem(appId: string, key: string): Promise<void>;
-  };
+  identity: Omit<RuntimeAppletIdentity, 'getRelays'>;
   intent: {
-    invoke(appId: string, request: IntentRequest): Promise<IntentResult>;
+    invoke(appId: string, request: IntentRequest): Promise<RuntimeAppOpenResult>;
   };
 }
 
@@ -192,28 +176,146 @@ function hostApi(): RuntimeAppletHostApi {
 export const runtimeIdentity: RuntimeAppletIdentity = {
   getPublicKey: () => hostApi().identity.getPublicKey(),
   getProfile: () => hostApi().identity.getProfile(),
+  subscribeProfile: (listener) => hostApi().identity.subscribeProfile(listener),
   getFollows: () => hostApi().identity.getFollows(),
-  getRelays: () => hostApi().identity.getRelays(),
+  async getRelays() {
+    const value = await invokeRuntimeRelay('relay.runtime.identity-relays', {});
+    if (!Array.isArray(value.relays)) throw new RuntimeAppletCommandError('relay.runtime.identity-relays', 'host_error', 'failed');
+    return Object.fromEntries(value.relays.flatMap((relay) => {
+      if (!relay || typeof relay !== 'object' || Array.isArray(relay)) return [];
+      const value = relay as Record<string, unknown>;
+      return typeof value.url === 'string' && typeof value.read === 'boolean' && typeof value.write === 'boolean'
+        ? [[value.url, { read: value.read, write: value.write }] as const]
+        : [];
+    }));
+  },
 };
+
+type RuntimeRelayControlValue = Record<string, unknown>;
+type RuntimeRelayProgressChunk = { streamId: string; chunkIndex: number; totalChunks: number; payload: string };
+
+function relayProgressResult(
+  data: unknown,
+  chunks: Map<string, string[]>,
+): RuntimeAppletRelayResult | undefined {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return undefined;
+  const chunk = data as Partial<RuntimeRelayProgressChunk>;
+  const { streamId, chunkIndex, totalChunks, payload } = chunk;
+  if (typeof streamId !== 'string' || typeof chunkIndex !== 'number' || typeof totalChunks !== 'number' || typeof payload !== 'string' ||
+    !Number.isInteger(chunkIndex) || !Number.isInteger(totalChunks) || chunkIndex < 0 || totalChunks < 1 || chunkIndex >= totalChunks) return undefined;
+  const parts = chunks.get(streamId) ?? Array.from({ length: totalChunks }, () => '');
+  if (parts.length !== totalChunks) return undefined;
+  parts[chunkIndex] = payload;
+  chunks.set(streamId, parts);
+  if (parts.some(part => part.length === 0)) return undefined;
+  chunks.delete(streamId);
+  try {
+    const parsed = JSON.parse(parts.join('')) as RuntimeAppletRelayResult;
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) && parsed.event && typeof parsed.event === 'object'
+      ? parsed
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function relayControlError(operationId: string, snapshot: ControlInvocationSnapshot): RuntimeAppletCommandError {
+  return new RuntimeAppletCommandError(operationId, snapshot.error?.code ?? 'host_error', snapshot.status);
+}
+
+async function invokeRuntimeRelay(
+  operationId: string,
+  arguments_: Record<string, unknown>,
+): Promise<RuntimeRelayControlValue> {
+  const client = controls();
+  const described = await client.describe(operationId);
+  if (!described) throw new RuntimeAppletCommandError(operationId, 'unknown_operation', 'failed');
+  const invocation = await client.invoke({
+    operationId,
+    arguments: arguments_ as ControlInvocationRequest['arguments'],
+    expectedRegistrationRevision: described.registrationRevision,
+  });
+  const snapshot = await invocation.result;
+  if (snapshot.status !== 'succeeded' && snapshot.status !== 'no-op') throw relayControlError(operationId, snapshot);
+  if (!snapshot.value || typeof snapshot.value !== 'object' || Array.isArray(snapshot.value)) {
+    throw new RuntimeAppletCommandError(operationId, 'host_error', 'failed');
+  }
+  return snapshot.value as RuntimeRelayControlValue;
+}
 
 export const runtimeRelay: RuntimeAppletRelay = {
   subscribe(filters, onEvent, onEose, options) {
-    return hostApi().relay.subscribe(
-      normalizeFilters(filters),
-      onEvent,
-      onEose,
-      options,
-    );
+    let closed = false;
+    let invocation: RuntimeControlInvocationHandle | undefined;
+    let unsubscribe: (() => void) | undefined;
+    const chunks = new Map<string, string[]>();
+    const client = controls();
+    void (async () => {
+      const operationId = 'relay.runtime.subscribe';
+      const described = await client.describe(operationId);
+      if (!described || closed) return;
+      invocation = await client.invoke({
+        operationId,
+        arguments: { filters: normalizeFilters(filters) as unknown as ControlJsonValue, ...(options?.relays ? { relays: options.relays } : {}) },
+        expectedRegistrationRevision: described.registrationRevision,
+      });
+      if (closed) {
+        await invocation.cancel();
+        return;
+      }
+      unsubscribe = invocation.subscribe((controlEvent) => {
+        if (closed) return;
+        if (controlEvent.kind !== 'progress') return;
+        const result = relayProgressResult(controlEvent.data, chunks);
+        if (result) onEvent(result);
+        else if (controlEvent.message === 'Runtime relay EOSE') onEose?.();
+      });
+      void invocation.result.catch(() => undefined);
+    })().catch(() => undefined);
+    return { close: () => {
+      if (closed) return;
+      closed = true;
+      unsubscribe?.();
+      unsubscribe = undefined;
+      void invocation?.cancel().catch(() => undefined);
+    } };
   },
-  query: filters => hostApi().relay.query(normalizeFilters(filters)),
-  publish: (event, options) => hostApi().relay.publish(event, options),
-};
-
-export const runtimeStorage: RuntimeAppletStorage = {
-  keys: () => hostApi().storage.keys(runtimeAppId()),
-  getItem: (key) => hostApi().storage.getItem(runtimeAppId(), key),
-  setItem: (key, value) => hostApi().storage.setItem(runtimeAppId(), key, value),
-  removeItem: (key) => hostApi().storage.removeItem(runtimeAppId(), key),
+  async query(filters) {
+    const operationId = 'relay.runtime.query';
+    const client = controls();
+    const described = await client.describe(operationId);
+    if (!described) throw new RuntimeAppletCommandError(operationId, 'unknown_operation', 'failed');
+    const invocation = await client.invoke({
+      operationId,
+      arguments: { filters: normalizeFilters(filters) as unknown as ControlJsonValue },
+      expectedRegistrationRevision: described.registrationRevision,
+    });
+    const results: RuntimeAppletRelayResult[] = [];
+    const chunks = new Map<string, string[]>();
+    invocation.subscribe((controlEvent) => {
+      if (controlEvent.kind !== 'progress' || controlEvent.message !== 'Runtime relay query chunk') return;
+      const result = relayProgressResult(controlEvent.data, chunks);
+      if (result) results.push(result);
+    });
+    const snapshot = await invocation.result;
+    if (snapshot.status !== 'succeeded') throw relayControlError(operationId, snapshot);
+    const terminal = snapshot.value as { count?: unknown; truncated?: unknown } | undefined;
+    if (!terminal || terminal.truncated !== false || terminal.count !== results.length) {
+      throw new RuntimeAppletCommandError(operationId, 'host_error', 'failed');
+    }
+    return results;
+  },
+  async publish(event, options) {
+    const value = await invokeRuntimeRelay('relay.runtime.publish', {
+      event,
+      ...(options?.targetAuthors ? { targetAuthors: options.targetAuthors } : {}),
+      ...(options?.relays ? { relays: options.relays } : {}),
+    });
+    if (!value.event || typeof value.event !== 'object' || Array.isArray(value.event)) {
+      throw new RuntimeAppletCommandError('relay.runtime.publish', 'host_error', 'failed');
+    }
+    return value.event as NostrEvent;
+  },
 };
 
 export const runtimeIntent: RuntimeAppletIntent = {
@@ -274,8 +376,8 @@ export const runtimeCommands: RuntimeAppletCommands = {
   },
   async get(id) {
     if (typeof id !== 'string') throw new RuntimeAppletCommandError('unknown.operation', 'host_error', 'failed');
-    const descriptor = await runtimeControls.describe(id);
-    return descriptor ? runtimeCommand(descriptor) : null;
+    const described = await runtimeControls.describe(id);
+    return described ? runtimeCommand(described.descriptor) : null;
   },
   async execute(id, args = []) {
     if (typeof id !== 'string' || !Array.isArray(args) || !args.every(arg => typeof arg === 'string')) {
@@ -286,8 +388,10 @@ export const runtimeCommands: RuntimeAppletCommands = {
       );
     }
     try {
-      const descriptor = await runtimeControls.describe(id);
-      if (!descriptor) throw new RuntimeAppletCommandError(id, 'unknown_operation', 'failed');
+      const client = controls();
+      const described = await client.describe(id);
+      if (!described) throw new RuntimeAppletCommandError(id, 'unknown_operation', 'failed');
+      const descriptor = described.descriptor;
       if (descriptor.availability.state !== 'available') {
         throw new RuntimeAppletCommandError(id, 'unavailable', 'unavailable');
       }
@@ -298,7 +402,11 @@ export const runtimeCommands: RuntimeAppletCommands = {
         descriptor.arguments[index]!.name,
         value,
       ]));
-      const invocation = await runtimeControls.invoke({ operationId: id, arguments: namedArguments });
+      const invocation = await client.invoke({
+        operationId: id,
+        arguments: namedArguments,
+        expectedRegistrationRevision: described.registrationRevision,
+      });
       const snapshot = await invocation.result;
       if (snapshot.status === 'accepted' || snapshot.status === 'succeeded' || snapshot.status === 'no-op') {
         return { id, executed: true };
@@ -321,7 +429,6 @@ export const runtimeCommands: RuntimeAppletCommands = {
 export const runtimeAppletApi: RuntimeAppletApi = {
   identity: runtimeIdentity,
   relay: runtimeRelay,
-  storage: runtimeStorage,
   intent: runtimeIntent,
   control: runtimeControls,
   commands: runtimeCommands,

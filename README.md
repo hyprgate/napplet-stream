@@ -31,6 +31,19 @@ pnpm --filter @hyprgate/napp-stream paja
 This starts Kehto Paja and the napplet's Vite dev server together, using
 the port configured in `vite.config.ts`.
 
+## Runtime playback lifecycle
+
+The shell owns playback. Selecting Radio in the same workspace releases the
+live-stream session and video pane before the radio starts. Streams observes
+the runtime subscription, clears its playing label and chat selection when
+playback stops, and requests a fresh session when the stream is selected again.
+Pausing keeps the selection and resumes the same session.
+
+The shared playback adapter preserves NAP-MEDIA `stopped` as a stopped/idle
+state, not a generic deletion notification. Stream selection reset is app
+behavior; other consumers may retain and resume stopped sessions. Queued
+autoplay is reported as loading until the shell media element attaches.
+
 ## Testing
 
 Run these checks from a Hyprgate parent checkout so workspace dependencies resolve:

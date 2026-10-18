@@ -1,6 +1,6 @@
-// packages/types/src/protocol.ts
-// NIP-01 wire protocol types for the hyprgate shell pseudo-relay.
-// All messages crossing the iframe/shell boundary use NIP-01 relay wire format.
+// Shared relay types and NAP contracts consumed by the shell and apps.
+
+import type { IntentBehavior, IntentInvokeOptions, IntentRequest, IntentResult } from '@napplet/core';
 
 // Phase 4 (ID-01): Capability type now re-exported from @kehto/acl (canonical NIP-5D surface).
 // @kehto/acl's Capability is a string union of NUB domain caps (relay:read, identity:read, etc.)
@@ -207,40 +207,18 @@ export type RelayMessage =
  */
 export const ALL_CAPABILITIES = ALL_CAPABILITY_LABELS;
 
-/** Runtime-authorized preference for an installed INTENT handler. */
-export type IntentHandlerPreference = 'default' | 'choose' | (string & {});
+export type {
+  IntentBehavior, IntentHandlerPreference, IntentInvokeOptions, IntentRequest, IntentResult,
+} from '@napplet/core';
 
-/** Window and focus hints for an INTENT invocation. */
-export interface IntentBehavior {
-  focus?: boolean;
-  newWindow?: boolean;
-  reuse?: boolean;
-}
-
-/** Optional selectors for an INTENT request. `action` is omitted for `open`. */
-export interface IntentRequestOptions {
+/** Host-side convenience selectors; the builder returns a normalized public request. */
+export interface IntentRequestOptions extends IntentInvokeOptions {
   action?: string;
   convention?: string;
-  handler?: IntentHandlerPreference;
-  behavior?: IntentBehavior;
 }
 
-/** Public-compatible NAP-INTENT request shape shared by Hyprgate producers. */
-export interface IntentRequest extends IntentRequestOptions {
+export interface IntentRequestInput extends IntentRequestOptions {
   archetype: string;
-  payload?: unknown;
-}
-
-/** Public-compatible NAP-INTENT result shape. Result identity is never optional. */
-export interface IntentResult {
-  ok: boolean;
-  archetype: string;
-  action: string;
-  handled: boolean;
-  handler?: string;
-  windowId?: string;
-  convention?: string;
-  error?: string;
 }
 
 /** One runtime-attested NAP-INC event. */
@@ -250,58 +228,54 @@ export interface IncEvent {
   payload?: unknown;
 }
 
-/** Validate and normalize a public-compatible INTENT request. */
-export function createIntentRequest(input: IntentRequest): IntentRequest | null {
+/** Build normalized host requests; SDK callers pass convention plus invoke options. */
+export function createIntentRequest(input: IntentRequestInput): IntentRequest | null {
   if (!isRecord(input) || !isIntentSlug(input.archetype)) return null;
-  if (input.action !== undefined && !isIntentSlug(input.action)) return null;
-  if (input.convention !== undefined && !isIntentConvention(input.convention)) return null;
-  if (input.handler !== undefined && !isIntentSlug(input.handler)) return null;
+  const convention = input.convention ?? `napplet:${input.archetype}/${input.action ?? 'open'}`;
+  if (!isIntentConvention(convention)) return null;
+  const slash = convention.indexOf('/');
+  const archetype = convention.slice('napplet:'.length, slash);
+  const action = convention.slice(slash + 1);
+  if (archetype !== input.archetype || (input.action !== undefined && action !== input.action)) return null;
+  if (input.handler !== undefined && !isNonEmptyString(input.handler)) return null;
   if (input.behavior !== undefined && !isIntentBehavior(input.behavior)) return null;
+  if (input.handlerHint !== undefined && (!isRecord(input.handlerHint)
+    || typeof input.handlerHint.address !== 'string'
+    || !/^35129:[0-9a-f]{64}:.+$/.test(input.handlerHint.address)
+    || (input.handlerHint.relays !== undefined && (!Array.isArray(input.handlerHint.relays)
+      || !input.handlerHint.relays.every(isNonEmptyString))))) return null;
 
   return {
-    archetype: input.archetype,
-    ...(input.action !== undefined ? { action: input.action } : {}),
-    ...(input.convention !== undefined ? { convention: input.convention } : {}),
+    archetype, action, convention,
     ...(input.handler !== undefined ? { handler: input.handler } : {}),
+    ...(input.handlerHint !== undefined ? { handlerHint: input.handlerHint } : {}),
     ...(input.behavior !== undefined ? { behavior: input.behavior } : {}),
     ...('payload' in input ? { payload: input.payload } : {}),
   };
 }
 
-/** Parse a received result whose canonical identity fields are all required. */
+/** Success is accepted delivery responsibility; it does not expose a window ID. */
 export function parseIntentResult(input: unknown): IntentResult | null {
-  if (!isRecord(input)) return null;
-  if (typeof input.ok !== 'boolean' || typeof input.handled !== 'boolean') return null;
-  if (!isIntentSlug(input.archetype) || !isIntentSlug(input.action)) return null;
-  if (input.handler !== undefined && !isIntentSlug(input.handler)) return null;
-  if (input.windowId !== undefined && typeof input.windowId !== 'string') return null;
-  if (input.convention !== undefined && !isIntentConvention(input.convention)) return null;
-  if (input.error !== undefined && typeof input.error !== 'string') return null;
-
-  return {
-    ok: input.ok,
-    archetype: input.archetype,
-    action: input.action,
-    handled: input.handled,
-    ...(input.handler !== undefined ? { handler: input.handler } : {}),
-    ...(input.windowId !== undefined ? { windowId: input.windowId } : {}),
-    ...(input.convention !== undefined ? { convention: input.convention } : {}),
-    ...(input.error !== undefined ? { error: input.error } : {}),
-  };
+  if (!isRecord(input) || typeof input.ok !== 'boolean') return null;
+  if (input.ok === false) {
+    return typeof input.error === 'string' ? { ok: false, error: input.error } : null;
+  }
+  if (!isIntentSlug(input.archetype) || !isIntentSlug(input.action)
+    || !isIntentConvention(input.convention) || !isNonEmptyString(input.handler)) return null;
+  if (input.convention !== `napplet:${input.archetype}/${input.action}`) return null;
+  return { ok: true, archetype: input.archetype, action: input.action,
+    convention: input.convention, handler: input.handler };
 }
 
-/** Build a canonical result from a request, defaulting only the result action. */
+/** Build a host result after resolution has selected an actual handler. */
 export function createIntentResult(
   request: IntentRequest,
-  outcome: Omit<IntentResult, 'archetype' | 'action'> & Partial<Pick<IntentResult, 'archetype' | 'action'>>,
+  outcome: { ok: boolean; handler?: string; error?: string },
 ): IntentResult | null {
   const normalizedRequest = createIntentRequest(request);
   if (!normalizedRequest) return null;
-  return parseIntentResult({
-    ...outcome,
-    archetype: outcome.archetype ?? normalizedRequest.archetype,
-    action: outcome.action ?? normalizedRequest.action ?? 'open',
-  });
+  return parseIntentResult({ ...outcome, archetype: normalizedRequest.archetype,
+    action: normalizedRequest.action, convention: normalizedRequest.convention });
 }
 
 /** Parse one runtime-attested INC event without manufacturing an absent payload. */
@@ -334,5 +308,6 @@ function isIntentConvention(value: unknown): value is string {
 
 function isIntentBehavior(value: unknown): value is IntentBehavior {
   if (!isRecord(value)) return false;
-  return ['focus', 'newWindow', 'reuse'].every((key) => value[key] === undefined || typeof value[key] === 'boolean');
+  return Object.keys(value).every(key => ['focus', 'reuse'].includes(key))
+    && ['focus', 'reuse'].every(key => value[key] === undefined || typeof value[key] === 'boolean');
 }

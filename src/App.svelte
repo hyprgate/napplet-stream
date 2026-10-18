@@ -241,7 +241,10 @@
       const sessionId = result.sessionId;
       runtimeSubscription = subscribeRuntimePlayback(sessionId, (state) => {
         if (runtimeSessionId !== sessionId) return;
-        if (!state) {
+        // A stopped stream is selected again with a fresh runtime request.
+        // Pause remains resumable; stopped is not a protocol deletion signal.
+        if (!state || state.state === 'idle' || state.state === 'ended' || state.state === 'error') {
+          selectedStream = null;
           activeStreamId = null;
           runtimeState = null;
           runtimeSessionId = null;
@@ -267,7 +270,7 @@
     <span class="text-accent-green text-sm font-mono">&gt; streams</span>
     <div class="flex-1"></div>
     {#if selectedStream}
-      <span class="text-text-dim text-xs truncate max-w-40">playing: {selectedStream.title}</span>
+      <span class="text-text-dim text-xs truncate max-w-40">selected: {selectedStream.title}</span>
     {/if}
     <button
       type="button"

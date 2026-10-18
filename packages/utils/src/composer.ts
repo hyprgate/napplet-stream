@@ -1,4 +1,4 @@
-import { relay, storage } from '@napplet/sdk';
+import { outbox, storage, type OutboxPublishResult } from '@napplet/sdk';
 import * as nip19 from 'nostr-tools/nip19';
 import { createKind1ReplyTags, KIND_TEXT_NOTE } from './note-viewer-protocol.js';
 
@@ -58,8 +58,15 @@ export function createTextNoteTemplate(content: string, tags: string[][] = []): 
   };
 }
 
-export async function publishTextNote(content: string, tags: string[][] = []): Promise<object> {
-  return relay.publish(createTextNoteTemplate(content, tags));
+export async function publishTextNote(
+  content: string,
+  tags: string[][] = [],
+): Promise<OutboxPublishResult> {
+  const result = await outbox.publish(createTextNoteTemplate(content, tags));
+  if (!result.ok) {
+    throw new Error(result.error ?? 'No writable relay accepted the note');
+  }
+  return result;
 }
 
 export function buildHashtagTags(content: string): string[][] {

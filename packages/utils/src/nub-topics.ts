@@ -7,13 +7,9 @@ export const SUPPORTED_NUB_IFC_PROTOCOL_CAPABILITIES = [
   'inc:NAP-06',
 ] as const;
 
+/** @deprecated Use NAP-IDENTITY onChanged; the shell no longer emits this INC topic. */
 export const IDENTITY_CHANGED_TOPIC = 'identity:changed';
-/**
- * @deprecated The shell no longer emits this topic (the bridge no longer dual-emits;
- * canonical topic is `identity:changed`). Retained only because feed/profile/live-chat
- * napplets still import it via the @hyprgate/utils barrel; napplet subscriber cleanup is
- * deferred to Phase 87.
- */
+/** @deprecated Use NAP-IDENTITY onChanged; retained only for external import compatibility. */
 export const LEGACY_AUTH_IDENTITY_CHANGED_TOPIC = 'auth:identity-changed';
 
 const CANONICAL_HEX_PUBKEY = /^[0-9a-f]{64}$/;

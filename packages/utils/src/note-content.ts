@@ -6,7 +6,14 @@ export type NoteContentBlock =
   | { type: 'url'; value: string; source: string }
   | { type: 'emoji'; value: string; source: string; imageUrl: string; address?: string }
   | { type: 'profile'; value: string; source: string }
-  | { type: 'event'; value: string; source: string }
+  | {
+    type: 'event';
+    value: string;
+    source: string;
+    author?: string;
+    kind?: number;
+    relays?: string[];
+  }
   | { type: 'address'; value: string; source: string }
   | { type: 'media'; value: string; mediaType: 'image' | 'video'; source: string }
   | { type: 'resource'; value: string; mediaType: 'image'; source: string };
@@ -244,8 +251,19 @@ function decodeNip19Block(encoded: string, source: string): NoteContentCandidate
       return data.pubkey ? { type: 'profile', value: data.pubkey, source } : null;
     }
     if (decoded.type === 'nevent') {
-      const data = decoded.data as { id?: string };
-      return data.id ? { type: 'event', value: data.id, source } : null;
+      const data = decoded.data as { id?: string; author?: string; kind?: number; relays?: string[] };
+      if (!data.id) return null;
+      const relays = Array.isArray(data.relays)
+        ? data.relays.filter((relay): relay is string => typeof relay === 'string')
+        : [];
+      return {
+        type: 'event',
+        value: data.id,
+        source,
+        ...(typeof data.author === 'string' ? { author: data.author } : {}),
+        ...(typeof data.kind === 'number' ? { kind: data.kind } : {}),
+        ...(relays.length > 0 ? { relays } : {}),
+      };
     }
     if (decoded.type === 'naddr') {
       const data = decoded.data as { kind?: number; pubkey?: string; identifier?: string };

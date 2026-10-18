@@ -336,15 +336,11 @@ function toRuntimeState(sessionId: string, state: MediaState): RuntimePlayerStat
 export async function requestRuntimePlayback(source: RuntimePlaybackSource): Promise<RuntimePlaybackResult> {
   const media = getNappletMediaClient();
   if (media && shellSupportsMedia()) {
-    try {
-      const result = await media.createSession(toMediaSessionCreate(source));
-      if (result.sessionId && result.owner === 'shell' && !result.error) {
-        sessionTransports.set(result.sessionId, 'media');
-        return { sessionId: result.sessionId };
-      }
-    } catch {
-      // Fall through to the legacy player.* bridge below.
-    }
+    const result = await media.createSession(toMediaSessionCreate(source));
+    if (result.error) throw new Error(result.error);
+    if (!result.sessionId || result.owner !== 'shell') throw new Error('NAP-MEDIA did not return a runtime-owned session');
+    sessionTransports.set(result.sessionId, 'media');
+    return { sessionId: result.sessionId };
   }
 
   const result = await sendPlayerRequest<PlayerEnvelope>({

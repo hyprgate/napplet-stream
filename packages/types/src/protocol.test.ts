@@ -119,38 +119,41 @@ describe('DESTRUCTIVE_KINDS smoke', () => {
 });
 
 describe('canonical INTENT and INC wire helpers', () => {
-  it('keeps action optional on requests while preserving independent selectors', () => {
-    const request = createIntentRequest({
-      archetype: 'profile',
-      convention: 'napplet:document/open',
-      payload: { pubkey: 'a'.repeat(64) },
-      behavior: { newWindow: true },
-    });
-
-    expect(request).toEqual({
-      archetype: 'profile',
-      convention: 'napplet:document/open',
-      payload: { pubkey: 'a'.repeat(64) },
-      behavior: { newWindow: true },
-    });
-    expect(request).not.toHaveProperty('action');
-    expect(request!.archetype).toBe('profile');
+  it('normalizes host convenience inputs into URI-consistent public requests', () => {
+    const request = createIntentRequest({ archetype: 'profile', payload: { pubkey: 'a'.repeat(64) }, behavior: { reuse: false } });
+    expect(request).toEqual({ archetype: 'profile', action: 'open', convention: 'napplet:profile/open',
+      payload: { pubkey: 'a'.repeat(64) }, behavior: { reuse: false } });
+    expect(createIntentRequest({ archetype: 'profile', convention: 'napplet:document/open' })).toBeNull();
+    expect(createIntentRequest({ archetype: 'profile', action: 'edit', convention: 'napplet:profile/open' })).toBeNull();
+    expect(createIntentRequest({ archetype: 'profile', convention: 'napplet:profile/open?pubkey=123' })).toBeNull();
+    const obsolete = JSON.parse('{"archetype":"profile","behavior":{"newWindow":true}}');
+    expect(createIntentRequest(obsolete)).toBeNull();
   });
 
-  it('normalizes an omitted request action in every result and rejects missing result identity', () => {
-    const request = createIntentRequest({ archetype: 'note', payload: { id: 'a'.repeat(64) } });
-    const failure = createIntentResult(request!, { ok: false, handled: false, error: 'no handler' });
+  it('preserves opaque catalog identities and explicit named-handler recommendations', () => {
+    const handler = `nip5d:35129:${'a'.repeat(64)}:Profile:Reader`;
+    const handlerHint = { address: `35129:${'a'.repeat(64)}:Profile:Reader`, relays: ['wss://relay.example'] };
+    expect(createIntentRequest({ archetype: 'profile', handler, handlerHint }))
+      .toMatchObject({ handler, handlerHint });
+    expect(createIntentRequest({ archetype: 'profile', handlerHint: { address: `5129:${'a'.repeat(64)}:reader` } })).toBeNull();
+  });
 
-    expect(failure).toEqual({
-      ok: false,
-      archetype: 'note',
-      action: 'open',
-      handled: false,
-      error: 'no handler',
-    });
-    expect(failure!.handled).toBe(false);
-    expect(parseIntentResult({ ok: false, archetype: 'note', handled: false })).toBeNull();
-    expect(parseIntentResult({ ok: false, archetype: 'note', action: '', handled: false })).toBeNull();
+  it('requires accepted results to identify their actual handler and convention', () => {
+    const request = createIntentRequest({ archetype: 'note' })!;
+    const accepted = createIntentResult(request, { ok: true, handler: `nip5d:35129:${'a'.repeat(64)}:reader` });
+    expect(accepted).toEqual({ ok: true, archetype: 'note', action: 'open',
+      convention: 'napplet:note/open', handler: `nip5d:35129:${'a'.repeat(64)}:reader` });
+    expect(accepted).not.toHaveProperty('handled');
+    expect(accepted).not.toHaveProperty('windowId');
+    expect(createIntentResult(request, { ok: true })).toBeNull();
+    expect(parseIntentResult({ ok: true, archetype: 'note', action: 'open', handled: true })).toBeNull();
+    expect(parseIntentResult({ ok: true, archetype: 'note', action: 'open', convention: 'napplet:profile/open', handler: 'reader' })).toBeNull();
+  });
+
+  it('accepts failures without manufacturing optional request identity', () => {
+    const request = createIntentRequest({ archetype: 'note' })!;
+    expect(createIntentResult(request, { ok: false, error: 'no handler' })).toEqual({ ok: false, error: 'no handler' });
+    expect(parseIntentResult({ ok: false })).toBeNull();
   });
 
   it('models one runtime-attested INC event and preserves an absent payload', () => {
