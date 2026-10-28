@@ -24,6 +24,7 @@ export interface AppRouteHandler {
   source: AppRegistrySource;
   reference?: string | null;
   referenceType?: string | null;
+  catalogAddress?: string;
   enabled: boolean;
   available: boolean;
   favorite?: boolean;
@@ -147,6 +148,7 @@ export function normalizeAppRegistrySnapshot(value: unknown): AppRegistrySnapsho
       const reference = app.reference === null ? null : nonEmptyString(app.reference);
       const referenceType = app.referenceType === null ? null : nonEmptyString(app.referenceType);
       const relayHints = normalizeLooseStringArray(app.relayHints);
+      const catalogAddress = nonEmptyString(app.catalogAddress);
       const normalized: AppRouteHandler = {
         id,
         title,
@@ -162,6 +164,7 @@ export function normalizeAppRegistrySnapshot(value: unknown): AppRegistrySnapsho
       if (relayHints.length > 0) normalized.relayHints = relayHints;
       if (reference !== null) normalized.reference = reference;
       if (referenceType !== null) normalized.referenceType = referenceType;
+      if (catalogAddress) normalized.catalogAddress = catalogAddress;
       return normalized;
     })
     .filter((item): item is AppRouteHandler => item !== null);

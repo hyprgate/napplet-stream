@@ -462,6 +462,18 @@ export function validateControlCommandDefinition(definition: ControlCommandDefin
       if (seenPaths.has(key)) issues.push(schemaIssue(path, 'Public paths and aliases must be unique'));
       seenPaths.add(key);
     }
+    const normalizeDescription = (value: string): string => value.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, ' ').trim();
+    const commandNames = new Set([
+      definition.operation.id,
+      ...publicPaths.filter(([, words]) => Array.isArray(words)).map(([, words]) => words.join(' ')),
+    ].map(normalizeDescription));
+    for (const [path, value] of [['operation.summary', definition.operation.summary], ['help', definition.help]] as const) {
+      if (!safeStaticString(value, false) || !normalizeDescription(value)) {
+        issues.push(schemaIssue(path, 'Command descriptions require nonempty bounded explanatory text'));
+      } else if (commandNames.has(normalizeDescription(value))) {
+        issues.push(schemaIssue(path, 'Describe what the command does instead of repeating its name'));
+      }
+    }
     schemaDefinitionIssues(definition.input, 'input', issues, false, false);
     schemaDefinitionIssues(definition.result.schema, 'result.schema', issues, false, true);
     if (definition.progress) schemaDefinitionIssues(definition.progress.schema, 'progress.schema', issues, false, true);

@@ -32,3 +32,4 @@ export * from './runtime-applet-api.js';
 export * from './theme-client.js';
 export * from './workspace-journal-protocol.js';
 export * from './zaps.js';
+export * from './napplet-catalog.js';

@@ -83,7 +83,62 @@ function definition(): ControlCommandDefinition {
   };
 }
 
+describe.each(['operation.summary', 'help'] as const)('command description %s', (path) => {
+  it.each([
+    { label: 'an empty string', value: '' },
+    { label: 'spaces only', value: '   ' },
+    { label: 'tabs and line breaks only', value: '\t\r\n' },
+    { label: 'Unicode whitespace only', value: '\u00a0\u2003\u202f' },
+    { label: 'invisible characters only', value: '\u200b\u200c\u200d\ufeff' },
+    { label: 'punctuation only', value: '... — !!!' },
+    { label: 'null', value: null },
+    { label: 'undefined', value: undefined },
+  ])('rejects $label before producing a command descriptor', ({ value }) => {
+    const source = definition();
+    Reflect.set(path === 'help' ? source : source.operation, path === 'help' ? 'help' : 'summary', value);
+
+    expect(validateControlCommandDefinition(source).map(issue => issue.path)).toEqual([path]);
+    expect(() => compileControlCommandDefinition(source)).toThrow(`Invalid control command definition: ${path}:`);
+  });
+
+  it('rejects an omitted property before producing a command descriptor', () => {
+    const source = definition();
+    Reflect.deleteProperty(path === 'help' ? source : source.operation, path === 'help' ? 'help' : 'summary');
+
+    expect(validateControlCommandDefinition(source).map(issue => issue.path)).toEqual([path]);
+    expect(() => compileControlCommandDefinition(source)).toThrow(`Invalid control command definition: ${path}:`);
+  });
+});
+
 describe('literal command outcome constraints', () => {
+  it.each(['operation.summary', 'help'] as const)('rejects a name-only %s at declaration compilation', (path) => {
+    for (const copy of ['test configure', 'TEST.CONFIGURE.', ' Test   Configure! ', 'configure-test']) {
+      const source = definition();
+      source.aliases = [['configure-test']];
+      if (path === 'help') source.help = copy;
+      else source.operation.summary = copy;
+      expect(validateControlCommandDefinition(source)).toContainEqual(expect.objectContaining({ path }));
+      expect(() => compileControlCommandDefinition(source)).toThrow('Invalid control command definition');
+    }
+    expect(validateControlCommandDefinition(definition())).toEqual([]);
+  });
+
+  it.each([
+    { summary: 'Configure the target service', help: 'Configure the selected target.\nProvide its URL with --target.' },
+    { summary: '対象の設定を更新する', help: '選択した対象の設定を更新します。' },
+  ])('preserves nonempty explanatory copy: $summary', ({ summary, help }) => {
+    const source = definition();
+    source.operation.summary = summary;
+    source.help = help;
+
+    expect(validateControlCommandDefinition(source)).toEqual([]);
+    const { descriptor, contract } = compileControlCommandDefinition(source);
+    expect(descriptor.summary).toBe(summary);
+    expect(descriptor.help).toBe(help);
+    expect(contract.help).toBe(help);
+    expect(descriptor.command?.help).toBe(help);
+  });
+
   it('derives bounded non-sensitive recovery from the executable schema only', () => {
     const schema: ControlValueSchema = {
       type: 'object',
