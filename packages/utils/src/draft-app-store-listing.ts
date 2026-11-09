@@ -52,6 +52,13 @@ export interface DraftAppStoreGeneratedReference {
   tag: string[];
 }
 
+export type DraftAppStoreListingIssue =
+  | 'missing-summary'
+  | 'missing-description'
+  | 'missing-screenshot'
+  | 'missing-label-or-topic'
+  | 'missing-app-reference';
+
 export interface DraftAppStoreListing {
   address: string;
   publisher: string;
@@ -59,13 +66,32 @@ export interface DraftAppStoreListing {
   name: string;
   summary: string;
   description: string;
+  /** NIP-82 `icon` URL when present and http(s). */
+  icon?: string;
   screenshots: string[];
   labels: string[];
   labelNamespaces: string[];
   topics: string[];
+  /** NIP-82 `url` website. */
+  website?: string;
+  /** NIP-82 `repository` clone URL. */
+  repository?: string;
+  /** NIP-82 `a` pointer to a NIP-34 repository announcement. */
+  repositoryAddress?: string;
+  /** NIP-82 SPDX `license` identifier. */
+  license?: string;
+  /** NIP-82 `f` platform identifiers. */
+  platforms: string[];
+  /** Draft `version` label. */
+  version?: string;
   nip5dReferences: DraftAppStoreNip5dReference[];
   generatedReferences: DraftAppStoreGeneratedReference[];
   provisionalTags: string[][];
+  /**
+   * Recommended fields that are absent. The listing is still usable; the App
+   * Store uses these to score listing completeness.
+   */
+  issues: DraftAppStoreListingIssue[];
   event: NostrEvent;
 }
 
@@ -84,26 +110,35 @@ export function parseDraftAppStoreListingEvent(event: NostrEvent): DraftAppStore
 
   const dTag = firstTag(event, 'd');
   const name = firstTag(event, 'name');
-  const summary = firstTag(event, 'summary');
-  const description = trimmed(event.content);
-  const screenshots = tagValues(event, 'image').concat(tagValues(event, 'screenshot'));
+  const summary = firstTag(event, 'summary') ?? '';
+  const description = trimmed(event.content) ?? '';
+  const icon = httpUrl(firstTag(event, 'icon'));
+  const screenshots = tagValues(event, 'image').concat(tagValues(event, 'screenshot')).filter((url) => httpUrl(url));
   const labels = tagValues(event, 'l');
   const labelNamespaces = tagValues(event, 'L');
   const topics = tagValues(event, 't');
+  const website = httpUrl(firstTag(event, 'url'));
+  const repository = firstTag(event, 'repository');
+  const repositoryAddress = event.tags.find((tag) => tag[0] === 'a' && /^30617:[0-9a-f]{64}:/.test(tag[1] ?? ''))?.[1];
+  const license = firstTag(event, 'license');
+  const platforms = tagValues(event, 'f');
+  const version = firstTag(event, 'version');
   const nip5dReferences = parseNip5dReferences(event);
   const generatedReferences = parseGeneratedReferences(event);
-  const issues: string[] = [];
+  const issues: DraftAppStoreListingIssue[] = [];
 
-  if (!dTag) issues.push('missing-d');
-  if (!name) issues.push('missing-name');
+  // NIP-82 requires only `d` and `name`; everything else is recommended.
+  const missing: string[] = [];
+  if (!dTag) missing.push('missing-d');
+  if (!name) missing.push('missing-name');
   if (!summary) issues.push('missing-summary');
   if (!description) issues.push('missing-description');
   if (screenshots.length === 0) issues.push('missing-screenshot');
   if (labels.length === 0 && topics.length === 0) issues.push('missing-label-or-topic');
   if (nip5dReferences.length === 0 && generatedReferences.length === 0) issues.push('missing-app-reference');
 
-  if (issues.length > 0 || !dTag || !name || !summary || !description) {
-    return { ok: false, reason: 'incomplete-listing', issues };
+  if (missing.length > 0 || !dTag || !name) {
+    return { ok: false, reason: 'incomplete-listing', issues: [...missing, ...issues] };
   }
 
   return {
@@ -115,16 +150,34 @@ export function parseDraftAppStoreListingEvent(event: NostrEvent): DraftAppStore
       name,
       summary,
       description,
+      ...(icon ? { icon } : {}),
       screenshots,
       labels,
       labelNamespaces,
       topics,
+      ...(website ? { website } : {}),
+      ...(repository ? { repository } : {}),
+      ...(repositoryAddress ? { repositoryAddress } : {}),
+      ...(license ? { license } : {}),
+      platforms,
+      ...(version ? { version } : {}),
       nip5dReferences,
       generatedReferences,
       provisionalTags: event.tags.filter((tag) => tag[0]?.startsWith('hyprgate:')).map((tag) => [...tag]),
+      issues,
       event,
     },
   };
+}
+
+function httpUrl(value: string | null | undefined): string | undefined {
+  if (!value) return undefined;
+  try {
+    const url = new URL(value);
+    return url.protocol === 'https:' || url.protocol === 'http:' ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function parseNip5dReferences(event: NostrEvent): DraftAppStoreNip5dReference[] {

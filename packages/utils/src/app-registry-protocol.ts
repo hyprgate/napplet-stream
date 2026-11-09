@@ -30,6 +30,12 @@ export interface AppRouteHandler {
   favorite?: boolean;
   actions: string[];
   routeKeys: string[];
+  /** Bare NAP domains the verified manifest declares with `R` tags. */
+  requiredDomains?: string[];
+  /** Bare NAP domains the verified manifest declares with `O` tags. */
+  optionalDomains?: string[];
+  /** Optional domains the user chose not to expose to this app. */
+  disabledOptionalDomains?: string[];
 }
 
 export interface AppRegistrySnapshotDto {
@@ -149,6 +155,9 @@ export function normalizeAppRegistrySnapshot(value: unknown): AppRegistrySnapsho
       const referenceType = app.referenceType === null ? null : nonEmptyString(app.referenceType);
       const relayHints = normalizeLooseStringArray(app.relayHints);
       const catalogAddress = nonEmptyString(app.catalogAddress);
+      const requiredDomains = normalizeLooseStringArray(app.requiredDomains);
+      const optionalDomains = normalizeLooseStringArray(app.optionalDomains);
+      const disabledOptionalDomains = normalizeLooseStringArray(app.disabledOptionalDomains);
       const normalized: AppRouteHandler = {
         id,
         title,
@@ -165,6 +174,9 @@ export function normalizeAppRegistrySnapshot(value: unknown): AppRegistrySnapsho
       if (reference !== null) normalized.reference = reference;
       if (referenceType !== null) normalized.referenceType = referenceType;
       if (catalogAddress) normalized.catalogAddress = catalogAddress;
+      if (requiredDomains.length > 0) normalized.requiredDomains = requiredDomains;
+      if (optionalDomains.length > 0) normalized.optionalDomains = optionalDomains;
+      if (disabledOptionalDomains.length > 0) normalized.disabledOptionalDomains = disabledOptionalDomains;
       return normalized;
     })
     .filter((item): item is AppRouteHandler => item !== null);

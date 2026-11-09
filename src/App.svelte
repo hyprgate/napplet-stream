@@ -1,14 +1,18 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { createStreamStore, parseKind30311 } from './lib/stream-store';
+  import { createStreamStore, parseKind30311, streamPhase } from './lib/stream-store';
+  import { subscribeProfileMetadata, type ProfileContent } from './lib/profile-metadata';
   import { streamChatContext } from './lib/stream-chat-context';
   import type { LiveStream } from './lib/stream-store';
-  import { relay, inc } from '@napplet/sdk';
+  import type { NostrEvent } from 'nostr-tools/core';
+  import { relay, inc, type Subscription } from '@napplet/sdk';
   import {
     controlRuntimePlayback,
+    createProfileIntentRequest,
     createStreamChannelSwitchPayload,
     createStreamCurrentContextPayload,
     hasNsfwTag,
+    invokeNappletIntent,
     releaseRuntimePlayback,
     requestRuntimePlayback,
     subscribeRuntimePlayback,
@@ -54,6 +58,42 @@
     showNsfw ? streams : streams.filter((stream) => !hasNsfwTag(stream.event)),
   );
 
+  // Phases depend on the clock (a quiet "live" stream goes stale), so it ticks with the poll.
+  let now = $derived.by(() => {
+    version;
+    return Math.floor(Date.now() / 1000);
+  });
+  let liveStreams = $derived(visibleStreams.filter((stream) => streamPhase(stream, now) === 'live'));
+  let upcomingStreams = $derived(
+    visibleStreams
+      .filter((stream) => streamPhase(stream, now) === 'upcoming')
+      .sort((a, b) => (a.starts ?? Number.MAX_SAFE_INTEGER) - (b.starts ?? Number.MAX_SAFE_INTEGER)),
+  );
+  let endedStreams = $derived(visibleStreams.filter((stream) => streamPhase(stream, now) === 'ended'));
+
+  // ── Host profiles ──────────────────────────────────────────────────────────
+  let profiles = $state<Map<string, ProfileContent>>(new Map());
+  const requestedProfiles = new Set<string>();
+  const profileSubscriptions: Subscription[] = [];
+
+  $effect(() => {
+    const missing = [...new Set(streams.map((stream) => stream.hostPubkey))]
+      .filter((pubkey) => !requestedProfiles.has(pubkey));
+    if (missing.length === 0) return;
+    for (const pubkey of missing) requestedProfiles.add(pubkey);
+    profileSubscriptions.push(subscribeProfileMetadata(missing, (pubkey, profile) => {
+      profiles = new Map(profiles).set(pubkey, profile);
+    }));
+  });
+
+  function openHost(pubkey: string): void {
+    const request = createProfileIntentRequest({ pubkey });
+    if (!request) return;
+    void invokeNappletIntent(request).catch((error) => {
+      console.warn('[livestream] profile open failed', error);
+    });
+  }
+
   let loading = $derived.by(() => {
     // eslint-disable-next-line @typescript-eslint/no-unused-expressions
     version;
@@ -70,7 +110,8 @@
     queueIndex: number | undefined;
     controls: RuntimePlayerControl[];
   } {
-    const playable = streams.filter((candidate) => candidate.streamUrl);
+    // Replays and upcoming streams don't belong in the next/previous of what's live.
+    const playable = streams.filter((candidate) => candidate.streamUrl && streamPhase(candidate, now) === 'live');
     const total = playable.length;
     const queue = playable.map((candidate, index) => ({
       url: candidate.streamUrl,
@@ -189,6 +230,7 @@
   // ── Cleanup on destroy ─────────────────────────────────────────────────────
   onDestroy(() => {
     sub?.close();
+    for (const subscription of profileSubscriptions) subscription.close();
     clearInterval(pollInterval);
     contextSub?.close();
     void releaseCurrentRuntime();
@@ -221,9 +263,10 @@
     runtimeSessionId = null;
     try {
       const playbackQueue = buildStreamQueue(stream);
+      const isLive = streamPhase(stream, now) === 'live';
       const result = await requestRuntimePlayback({
         url: stream.streamUrl,
-        kind: 'hls',
+        kind: stream.streamUrl.toLowerCase().includes('.m3u8') ? 'hls' : 'video',
         title: stream.title,
         artist: stream.service || undefined,
         album: 'Live streams',
@@ -234,7 +277,7 @@
         queueIndex: playbackQueue.queueIndex,
         capabilities: playbackQueue.controls,
         autoplay: true,
-        live: true,
+        live: isLive,
       });
       runtimeSessionId = result.sessionId;
       runtimeState = result.state?.state ?? 'loading';
@@ -244,6 +287,10 @@
         // A stopped stream is selected again with a fresh runtime request.
         // Pause remains resumable; stopped is not a protocol deletion signal.
         if (!state || state.state === 'idle' || state.state === 'ended' || state.state === 'error') {
+          // The player drops back to idle when a source never loads. Say so on the card,
+          // otherwise a failed stream just looks like nothing happened.
+          const neverStarted = runtimeState === 'loading' && state?.state === 'idle';
+          runtimeErrorStreamId = state?.state === 'error' || neverStarted ? activeStreamId : null;
           selectedStream = null;
           activeStreamId = null;
           runtimeState = null;
@@ -265,39 +312,57 @@
 </script>
 
 <div class="app h-screen w-screen overflow-hidden bg-bg-base text-text-primary font-mono">
-  <!-- Header bar -->
-  <div class="flex items-center gap-2 px-3 py-2 border-b border-border-dim flex-shrink-0">
-    <span class="text-accent-green text-sm font-mono">&gt; streams</span>
+  <header class="flex items-center gap-2 px-3 py-2 border-b border-border-dim flex-shrink-0">
+    <h1 class="app-title">Streams</h1>
+    {#if loading}
+      <span class="text-text-muted text-xs animate-pulse">Looking for streams…</span>
+    {:else}
+      <span class="text-text-muted text-xs">{liveStreams.length} live</span>
+    {/if}
     <div class="flex-1"></div>
     {#if selectedStream}
-      <span class="text-text-dim text-xs truncate max-w-40">selected: {selectedStream.title}</span>
+      <span class="text-text-muted text-xs truncate watching">Watching: {selectedStream.title}</span>
     {/if}
     <button
       type="button"
-      class="nsfw-toggle text-xs font-mono px-2 py-0.5 rounded border transition-colors {showNsfw ? 'border-accent-green text-accent-green' : 'border-border-dim text-text-dim hover:text-text-primary'}"
+      class="nsfw-toggle text-xs font-mono px-2 py-0.5 rounded border transition-colors flex-none {showNsfw ? 'border-accent-green text-accent-green' : 'border-border-dim text-text-muted hover:text-text-primary'}"
       aria-pressed={showNsfw}
-      title="Show #nsfw streams"
+      aria-label="Show NSFW streams"
+      title={showNsfw ? '#nsfw streams are showing' : '#nsfw streams are hidden'}
       onclick={() => { showNsfw = !showNsfw; }}
     >
-      NSFW
+      NSFW {showNsfw ? 'on' : 'off'}
     </button>
-    {#if loading}
-      <span class="text-text-dim text-xs animate-pulse">scanning...</span>
-    {:else}
-      <span class="text-text-dim text-xs">{visibleStreams.length} live</span>
-    {/if}
-  </div>
+  </header>
 
-  <!-- Stream list -->
   <div class="overflow-hidden" style="height: calc(100vh - 41px);">
     <StreamList
-      streams={visibleStreams}
+      live={liveStreams}
+      upcoming={upcomingStreams}
+      ended={endedStreams}
       {loading}
+      {now}
+      {profiles}
       activeStreamId={activeStreamId}
       playbackState={runtimeState}
       errorStreamId={runtimeErrorStreamId}
       disabled={requestInFlight}
       onselect={(stream) => { void handleSelectStream(stream); }}
+      onhost={openHost}
     />
   </div>
 </div>
+
+<style>
+  .app-title {
+    margin: 0;
+    font: inherit;
+    font-size: 13px;
+    font-weight: 600;
+  }
+
+  .watching {
+    min-width: 0;
+    max-width: 40%;
+  }
+</style>

@@ -6,7 +6,7 @@ import {
   type RuntimeControlRequest,
   type RuntimeControlResponse,
 } from './control-plane.js';
-import { runtimeAppletApi, runtimeCommands, runtimeControls, runtimeIdentity, runtimeRelay, type RuntimeAppletHostApi, type RuntimeAppletSubscription } from './runtime-applet-api.js';
+import { runtimeAppletApi, runtimeCommands, runtimeControls, runtimeIdentity, runtimeOutbox, runtimeRelay, type RuntimeAppletHostApi, type RuntimeAppletSubscription } from './runtime-applet-api.js';
 
 function descriptor(): ControlOperationDescriptor {
   return {
@@ -118,6 +118,51 @@ describe('runtime applet public control API', () => {
     dispatch({ protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation', invocationId: 'relay-subscribe', payload: { kind: 'progress', invocationId: 'relay-subscribe', sequence: 1, timestamp: 1, message: 'Runtime relay event chunk', data: { streamId: 'subscription-0', chunkIndex: 0, totalChunks: 1, payload: JSON.stringify({ event }) } } });
     dispatch({ protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation-result', invocationId: 'relay-subscribe', snapshot: { id: 'relay-subscribe', operationId: 'relay.runtime.subscribe', operationRevision: 8, status: 'succeeded', cancellable: true, startedAt: 1, completedAt: 2, progress: [] } });
     expect(received).not.toHaveBeenCalled();
+  });
+
+  it('streams shell outbox records with routing hints and reports a shell-side close once', async () => {
+    const postMessage = vi.spyOn(window.parent, 'postMessage').mockImplementation(() => undefined);
+    const outboxDescriptor = { ...descriptor(), id: 'outbox.subscribe' };
+    const author = 'b'.repeat(64);
+    const event = { id: 'a'.repeat(64), pubkey: author, sig: 'c'.repeat(128), kind: 35129, created_at: 1, content: 'Reader', tags: [['d', 'reader']] };
+    const received = vi.fn();
+    const closed = vi.fn();
+
+    const subscription = runtimeOutbox.subscribe(
+      { kinds: [35129], authors: [author] },
+      received,
+      { authors: [author], relays: ['wss://relay.example'] },
+      closed,
+    );
+    const describe = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
+    expect(describe).toMatchObject({ method: 'describe', payload: { operationId: 'outbox.subscribe' } });
+    dispatch(response(describe, { revision: 50, registrationRevision: 9, descriptor: outboxDescriptor }));
+    await Promise.resolve();
+    const invoke = postMessage.mock.calls.at(-1)?.[0] as RuntimeControlRequest;
+    expect(invoke).toMatchObject({
+      method: 'invoke',
+      payload: {
+        operationId: 'outbox.subscribe',
+        expectedRegistrationRevision: 9,
+        arguments: { filters: [{ kinds: [35129], authors: [author] }], options: { authors: [author], relays: ['wss://relay.example'] } },
+      },
+    });
+    dispatch(response(invoke, { invocationId: 'outbox-sub', cancellable: true }));
+    for (let tick = 0; tick < 4; tick += 1) await Promise.resolve();
+    const record = JSON.stringify({ event, relayHints: ['wss://relay.example'] });
+    const half = Math.ceil(record.length / 2);
+    for (const [chunkIndex, payload] of [record.slice(0, half), record.slice(half)].entries()) {
+      dispatch({ protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation', invocationId: 'outbox-sub', payload: { kind: 'progress', invocationId: 'outbox-sub', sequence: chunkIndex + 1, timestamp: 1, message: 'Outbox record chunk', data: { streamId: 'subscription-0', chunkIndex, totalChunks: 2, payload } } });
+    }
+    expect(received).toHaveBeenCalledTimes(1);
+    expect(received).toHaveBeenCalledWith({ event, relayHints: ['wss://relay.example'] });
+
+    dispatch({ protocol: RUNTIME_CONTROL_PROTOCOL, version: RUNTIME_CONTROL_VERSION, kind: 'event', event: 'invocation-result', invocationId: 'outbox-sub', snapshot: { id: 'outbox-sub', operationId: 'outbox.subscribe', operationRevision: 9, status: 'succeeded', cancellable: true, startedAt: 1, completedAt: 2, progress: [], value: { status: 'closed', count: 1, reason: 'relay list unavailable' } } });
+    await Promise.resolve();
+    await Promise.resolve();
+    expect(closed).toHaveBeenCalledTimes(1);
+    expect(closed).toHaveBeenCalledWith('relay list unavailable');
+    subscription.close();
   });
 
   it('forwards a host-owned identity profile subscription and its close handle', () => {

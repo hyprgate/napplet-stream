@@ -21,6 +21,8 @@ export * from './note-viewer-protocol.js';
 export * from './nip89-handlers.js';
 export * from './napplet-install-link.js';
 export * from './verified-nip5d-icon.js';
+export * from './verified-blossom-blob.js';
+export * from './nip5d-presentation-media.js';
 export * from './nsfw.js';
 export * from './nub-topics.js';
 export * from './pubkey-color.js';

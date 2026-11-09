@@ -58,7 +58,7 @@ describe('parseDraftAppStoreListingEvent', () => {
     });
   });
 
-  it('returns typed failures for incomplete listings', () => {
+  it('returns typed failures for listings without the NIP-82 required d and name tags', () => {
     const parsed = parseDraftAppStoreListingEvent(event({ tags: [['d', 'demo-app']], content: '  ' }));
 
     expect(parsed.ok).toBe(false);
@@ -75,7 +75,59 @@ describe('parseDraftAppStoreListingEvent', () => {
     }
   });
 
-  it('rejects namespace-only labels without a concrete label or topic', () => {
+  it('accepts a minimal NIP-82 application and reports missing recommended fields as issues', () => {
+    const parsed = parseDraftAppStoreListingEvent(event({
+      tags: [
+        ['d', 'com.example.reader'],
+        ['name', 'Reader'],
+        ['icon', 'https://cdn.example/icon.png'],
+        ['url', 'https://reader.example'],
+        ['repository', 'https://github.com/example/reader'],
+        ['a', `30617:${APP_PUBKEY}:reader`, 'wss://relay.example'],
+        ['license', 'MIT'],
+        ['f', 'wasm32'],
+      ],
+      content: '',
+    }));
+
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.listing).toMatchObject({
+        dTag: 'com.example.reader',
+        name: 'Reader',
+        summary: '',
+        description: '',
+        icon: 'https://cdn.example/icon.png',
+        website: 'https://reader.example/',
+        repository: 'https://github.com/example/reader',
+        repositoryAddress: `30617:${APP_PUBKEY}:reader`,
+        license: 'MIT',
+        platforms: ['wasm32'],
+        nip5dReferences: [],
+      });
+      expect(parsed.listing.issues).toEqual([
+        'missing-summary',
+        'missing-description',
+        'missing-screenshot',
+        'missing-label-or-topic',
+        'missing-app-reference',
+      ]);
+    }
+  });
+
+  it('ignores non-http icon and image URLs', () => {
+    const parsed = parseDraftAppStoreListingEvent(event({
+      tags: [['d', 'demo-app'], ['name', 'Demo App'], ['icon', 'javascript:alert(1)'], ['image', 'ftp://example.test/a.png']],
+    }));
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.listing.icon).toBeUndefined();
+      expect(parsed.listing.screenshots).toEqual([]);
+      expect(parsed.listing.issues).toContain('missing-screenshot');
+    }
+  });
+
+  it('reports namespace-only labels without a concrete label or topic', () => {
     const parsed = parseDraftAppStoreListingEvent(event({
       tags: [
         ['d', 'demo-app'],
@@ -87,10 +139,10 @@ describe('parseDraftAppStoreListingEvent', () => {
       ],
     }));
 
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) {
-      expect(parsed.reason).toBe('incomplete-listing');
-      expect(parsed.issues).toContain('missing-label-or-topic');
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.listing.labelNamespaces).toEqual(['com.hyprgate.category']);
+      expect(parsed.listing.issues).toEqual(['missing-label-or-topic']);
     }
   });
 
@@ -111,6 +163,7 @@ describe('parseDraftAppStoreListingEvent', () => {
     if (parsed.ok) {
       expect(parsed.listing.provisionalTags).toEqual([['hyprgate:foo', 'bar']]);
       expect(parsed.listing.topics).toEqual(['tools']);
+      expect(parsed.listing.issues).toEqual([]);
     }
   });
 
@@ -140,7 +193,7 @@ describe('parseDraftAppStoreListingEvent', () => {
     }
   });
 
-  it('requires either a NIP-5D or generated registry app reference', () => {
+  it('reports a missing NIP-5D or generated registry app reference as an issue', () => {
     const parsed = parseDraftAppStoreListingEvent(event({
       tags: [
         ['d', 'demo-app'],
@@ -151,10 +204,9 @@ describe('parseDraftAppStoreListingEvent', () => {
       ],
     }));
 
-    expect(parsed.ok).toBe(false);
-    if (!parsed.ok) {
-      expect(parsed.reason).toBe('incomplete-listing');
-      expect(parsed.issues).toContain('missing-app-reference');
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) {
+      expect(parsed.listing.issues).toEqual(['missing-app-reference']);
     }
   });
 

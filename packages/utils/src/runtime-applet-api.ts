@@ -38,6 +38,27 @@ export interface RuntimeAppletSubscribeOptions {
   relays?: string[];
 }
 
+/**
+ * Shell-routed outbox subscription options. The shell opens its policy relays
+ * immediately and attaches each author's NIP-65 write relays once their relay
+ * lists resolve; the stream stays open and never reports EOSE.
+ */
+export interface RuntimeAppletOutboxSubscribeOptions {
+  /** Authors whose outbox relays the shell attaches, in addition to any `authors` filter fields. */
+  authors?: string[];
+  /** Relay hints the shell attaches immediately alongside its policy relays. */
+  relays?: string[];
+}
+
+export interface RuntimeAppletOutbox {
+  subscribe(
+    filters: NostrFilter | NostrFilter[],
+    onEvent: (result: RuntimeAppletRelayResult) => void,
+    options?: RuntimeAppletOutboxSubscribeOptions,
+    onClosed?: (reason?: string) => void,
+  ): RuntimeAppletSubscription;
+}
+
 export interface RuntimeAppletRelay {
   subscribe(
     filters: NostrFilter | NostrFilter[],
@@ -243,42 +264,91 @@ async function invokeRuntimeRelay(
   return snapshot.value as RuntimeRelayControlValue;
 }
 
+interface ControlStreamOptions {
+  operationId: string;
+  arguments: Record<string, unknown>;
+  onEvent: (result: RuntimeAppletRelayResult) => void;
+  onProgressMessage?: (message: string | undefined) => void;
+  onResult?: (snapshot: ControlInvocationSnapshot) => void;
+}
+
+/**
+ * Open a cancellable shell control stream and reassemble its chunked relay
+ * records. Records arrive as ordered JSON chunks; the stream stays open until
+ * the caller closes it or the shell finishes the invocation.
+ */
+function subscribeControlStream(stream: ControlStreamOptions): RuntimeAppletSubscription {
+  let closed = false;
+  let invocation: RuntimeControlInvocationHandle | undefined;
+  let unsubscribe: (() => void) | undefined;
+  const chunks = new Map<string, string[]>();
+  const client = controls();
+  void (async () => {
+    const described = await client.describe(stream.operationId);
+    if (!described || closed) return;
+    invocation = await client.invoke({
+      operationId: stream.operationId,
+      arguments: stream.arguments as ControlInvocationRequest['arguments'],
+      expectedRegistrationRevision: described.registrationRevision,
+    });
+    if (closed) {
+      await invocation.cancel();
+      return;
+    }
+    unsubscribe = invocation.subscribe((controlEvent) => {
+      if (closed) return;
+      if (controlEvent.kind !== 'progress') return;
+      const result = relayProgressResult(controlEvent.data, chunks);
+      if (result) stream.onEvent(result);
+      else stream.onProgressMessage?.(controlEvent.message);
+    });
+    void invocation.result.then((snapshot) => {
+      if (!closed) stream.onResult?.(snapshot);
+    }).catch(() => undefined);
+  })().catch(() => undefined);
+  return { close: () => {
+    if (closed) return;
+    closed = true;
+    unsubscribe?.();
+    unsubscribe = undefined;
+    void invocation?.cancel().catch(() => undefined);
+  } };
+}
+
+/**
+ * Shell outbox routing for runtime applets. Unlike {@link runtimeRelay}, the
+ * shell resolves the authors' NIP-65 relay lists and keeps the subscription
+ * open on every attached relay; there is no EOSE and no deadline.
+ */
+export const runtimeOutbox: RuntimeAppletOutbox = {
+  subscribe(filters, onEvent, options, onClosed) {
+    const routing: Record<string, unknown> = {};
+    if (options?.authors?.length) routing.authors = options.authors;
+    if (options?.relays?.length) routing.relays = options.relays;
+    return subscribeControlStream({
+      operationId: 'outbox.subscribe',
+      arguments: {
+        filters: normalizeFilters(filters) as unknown as ControlJsonValue,
+        ...(Object.keys(routing).length > 0 ? { options: routing } : {}),
+      },
+      onEvent,
+      onResult: (snapshot) => {
+        const value = snapshot.value as { status?: unknown; reason?: unknown } | undefined;
+        if (snapshot.status !== 'succeeded' || value?.status !== 'closed') return;
+        onClosed?.(typeof value.reason === 'string' ? value.reason : undefined);
+      },
+    });
+  },
+};
+
 export const runtimeRelay: RuntimeAppletRelay = {
   subscribe(filters, onEvent, onEose, options) {
-    let closed = false;
-    let invocation: RuntimeControlInvocationHandle | undefined;
-    let unsubscribe: (() => void) | undefined;
-    const chunks = new Map<string, string[]>();
-    const client = controls();
-    void (async () => {
-      const operationId = 'relay.runtime.subscribe';
-      const described = await client.describe(operationId);
-      if (!described || closed) return;
-      invocation = await client.invoke({
-        operationId,
-        arguments: { filters: normalizeFilters(filters) as unknown as ControlJsonValue, ...(options?.relays ? { relays: options.relays } : {}) },
-        expectedRegistrationRevision: described.registrationRevision,
-      });
-      if (closed) {
-        await invocation.cancel();
-        return;
-      }
-      unsubscribe = invocation.subscribe((controlEvent) => {
-        if (closed) return;
-        if (controlEvent.kind !== 'progress') return;
-        const result = relayProgressResult(controlEvent.data, chunks);
-        if (result) onEvent(result);
-        else if (controlEvent.message === 'Runtime relay EOSE') onEose?.();
-      });
-      void invocation.result.catch(() => undefined);
-    })().catch(() => undefined);
-    return { close: () => {
-      if (closed) return;
-      closed = true;
-      unsubscribe?.();
-      unsubscribe = undefined;
-      void invocation?.cancel().catch(() => undefined);
-    } };
+    return subscribeControlStream({
+      operationId: 'relay.runtime.subscribe',
+      arguments: { filters: normalizeFilters(filters) as unknown as ControlJsonValue, ...(options?.relays ? { relays: options.relays } : {}) },
+      onEvent,
+      onProgressMessage: (message) => { if (message === 'Runtime relay EOSE') onEose?.(); },
+    });
   },
   async query(filters) {
     const operationId = 'relay.runtime.query';

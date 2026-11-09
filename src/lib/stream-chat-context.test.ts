@@ -27,7 +27,7 @@ describe('streamChatContext', () => {
     ]))!;
 
     expect(streamChatContext(stream)).toEqual({
-      streamAddr: '30311:stream-host:phase-94-stream',
+      streamAddr: '30311:stream-publisher:phase-94-stream',
       title: 'Phase 94 Stream',
       chatRelays: ['wss://relay.example'],
     });

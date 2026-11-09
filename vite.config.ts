@@ -10,7 +10,7 @@ export default defineConfig({
     svelte(),
     nip5aManifest({
       nappletType: 'livestream',
-      requires: ['relay', 'inc', 'media', 'resource'],
+      requires: ['relay', 'inc', 'media', 'resource', 'intent'],
       optional: ['theme'],
       icon: { data: readFileSync(new URL('./icon.png', import.meta.url)), mimeType: 'image/png' },
       artifactMode: 'single-file',

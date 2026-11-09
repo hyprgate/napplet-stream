@@ -5,7 +5,7 @@ import type { LiveStream } from '../lib/stream-store';
 import StreamCard from './StreamCard.svelte';
 
 vi.mock('@hyprgate/utils', () => ({
-  pubkeyColorStyle: () => '',
+  pubkeyReadableColor: () => '#445566',
   resourceImage(node: HTMLImageElement, url: string) {
     if (url) node.setAttribute('src', url);
     return {
@@ -38,6 +38,8 @@ function makeStream(overrides: Partial<LiveStream> = {}): LiveStream {
     title: 'Test Stream',
     streamUrl: 'https://stream.example.test/live.m3u8',
     status: 'live',
+    starts: null,
+    ends: null,
     hostPubkey: 'host-pubkey',
     viewerCount: 0,
     image: 'https://stream.example.test/thumb.jpg',
@@ -50,12 +52,14 @@ function makeStream(overrides: Partial<LiveStream> = {}): LiveStream {
   };
 }
 
-function mountCard(stream: LiveStream) {
+function mountCard(stream: LiveStream, extra: Record<string, unknown> = {}) {
   const component = mount(StreamCard, {
     target: document.body,
     props: {
       stream,
+      now: stream.createdAt,
       onselect: vi.fn(),
+      ...extra,
     },
   });
   mounted.push(component);
@@ -128,5 +132,31 @@ describe('StreamCard thumbnail states', () => {
 
     expect(document.querySelector('[data-stream-thumbnail]')).toBeNull();
     expect(placeholder()?.getAttribute('data-thumbnail-state')).toBe('fallback');
+  });
+});
+
+describe('StreamCard host identity', () => {
+  const HOST = '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798';
+
+  it('falls back to a short npub when the host has no profile', async () => {
+    mountCard(makeStream({ hostPubkey: HOST }));
+    await tick();
+
+    expect(document.querySelector('.host-name')?.textContent).toBe('npub10xlxvlh…pkge6d');
+    expect(document.querySelector('.host')?.getAttribute('title')).toMatch(/^npub1/);
+  });
+
+  it('shows the name and avatar, and opens the host, when a profile is known', async () => {
+    const onhost = vi.fn();
+    mountCard(makeStream({ hostPubkey: HOST }), {
+      profile: { display_name: 'Jules', picture: 'https://example.test/jules.png' },
+      onhost,
+    });
+    await tick();
+
+    expect(document.querySelector('.host-name')?.textContent).toBe('Jules');
+    expect(document.querySelector('img.avatar')?.getAttribute('src')).toBe('https://example.test/jules.png');
+    document.querySelector<HTMLElement>('.host')?.click();
+    expect(onhost).toHaveBeenCalledWith(HOST);
   });
 });

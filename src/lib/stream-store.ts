@@ -6,13 +6,17 @@ import type { NostrEvent } from 'nostr-tools/core';
 
 export interface LiveStream {
   id: string;
-  /** NIP-53 addressable coordinate: "30311:<hostPubkey>:<dTag>" — used for kind 1311 chat. */
+  /** NIP-53 addressable coordinate: "30311:<event author>:<dTag>" — used for kind 1311 chat. */
   streamAddr: string;
   /** Relay URLs from the kind 30311 "relays" tag — where kind 1311 chat events are hosted. */
   chatRelays: string[];
   title: string;
   streamUrl: string;
-  status: string;
+  status: 'planned' | 'live' | 'ended';
+  /** Unix seconds from the "starts" tag, when present. */
+  starts: number | null;
+  /** Unix seconds from the "ends" tag, when present. */
+  ends: number | null;
   hostPubkey: string;
   viewerCount: number;
   image: string;
@@ -21,6 +25,26 @@ export interface LiveStream {
   tags: string[];
   createdAt: number;
   event: NostrEvent;
+}
+
+export type StreamPhase = 'live' | 'upcoming' | 'ended';
+
+/** NIP-53: clients MAY treat status=live as ended after 1hr without an update. */
+export const STALE_LIVE_SECONDS = 3600;
+
+export function isStaleLive(stream: Pick<LiveStream, 'status' | 'createdAt'>, nowSeconds: number): boolean {
+  return stream.status === 'live' && nowSeconds - stream.createdAt > STALE_LIVE_SECONDS;
+}
+
+export function streamPhase(stream: Pick<LiveStream, 'status' | 'createdAt'>, nowSeconds: number): StreamPhase {
+  if (stream.status === 'planned') return 'upcoming';
+  if (stream.status === 'ended' || isStaleLive(stream, nowSeconds)) return 'ended';
+  return 'live';
+}
+
+/** Upcoming streams can't be watched yet, and an ended one only if it left a URL behind. */
+export function isWatchable(stream: Pick<LiveStream, 'status' | 'createdAt' | 'streamUrl'>, nowSeconds: number): boolean {
+  return streamPhase(stream, nowSeconds) !== 'upcoming' && stream.streamUrl.length > 0;
 }
 
 export interface StreamStore {
@@ -33,13 +57,20 @@ export interface StreamStore {
   clear(): void;
 }
 
+function parseTimestamp(value: string | undefined): number | null {
+  const parsed = Number.parseInt(value ?? '', 10);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
 /**
  * Parse a Nostr kind 30311 event into a LiveStream object.
- * Returns null if the event is not kind 30311 or status is not 'live'.
+ * Returns null if the event is not kind 30311 or its status isn't one NIP-53 defines
+ * (planned, live, ended).
  *
  * Tag priority for URL:  streaming > stream > recording > url
+ *                        Ended streams use only recording: their live URL is gone.
  * Title fallback:        title tag, else d tag
- * Host:                  p tag with role=host, else event.pubkey
+ * Host:                  p tag with role=host (any case), else event.pubkey
  */
 export function parseKind30311(event: NostrEvent): LiveStream | null {
   if (event.kind !== 30311) return null;
@@ -54,9 +85,8 @@ export function parseKind30311(event: NostrEvent): LiveStream | null {
     }
   }
 
-  // Filter: only live streams
-  const status = tagMap.get('status') ?? 'offline';
-  if (status !== 'live') return null;
+  const status = tagMap.get('status');
+  if (status !== 'planned' && status !== 'live' && status !== 'ended') return null;
 
   // d-tag (required for NIP-53 addressable coordinate)
   const dTag = tagMap.get('d') ?? '';
@@ -65,15 +95,17 @@ export function parseKind30311(event: NostrEvent): LiveStream | null {
   const title = tagMap.get('title') ?? (dTag || 'Untitled Stream');
 
   // URL with fallback chain: streaming > stream > recording > url
-  const streamUrl =
-    tagMap.get('streaming') ??
-    tagMap.get('stream') ??
-    tagMap.get('recording') ??
-    tagMap.get('url') ??
-    '';
+  const streamUrl = status === 'ended'
+    ? tagMap.get('recording') ?? ''
+    : tagMap.get('streaming') ??
+      tagMap.get('stream') ??
+      tagMap.get('recording') ??
+      tagMap.get('url') ??
+      '';
 
-  // Host: find 'p' tag with 4th element (index 3) === 'host'
-  const hostTag = event.tags.find((t) => t[0] === 'p' && t[3] === 'host');
+  // Host: find 'p' tag whose role marker (index 3) is host. NIP-53 markers are
+  // displayable names, so "Host" is as valid as "host".
+  const hostTag = event.tags.find((t) => t[0] === 'p' && t[3]?.toLowerCase() === 'host');
   const hostPubkey = (hostTag?.[1] ?? event.pubkey) as string;
 
   // Viewer count
@@ -84,8 +116,9 @@ export function parseKind30311(event: NostrEvent): LiveStream | null {
     .filter((t) => t[0] === 't' && t[1] !== undefined)
     .map((t) => t[1] as string);
 
-  // NIP-53 addressable coordinate — used for kind 1311 chat filter '#a' tag
-  const streamAddr = `30311:${hostPubkey}:${dTag}`;
+  // NIP-53 addressable coordinate — used for kind 1311 chat filter '#a' tag. It names
+  // the event's author, who isn't the host when a service publishes on their behalf.
+  const streamAddr = `30311:${event.pubkey}:${dTag}`;
 
   // Chat relay URLs from the "relays" tag — where kind 1311 events are hosted.
   // NIP-53: ["relays", "wss://one.com", "wss://two.com", ...]
@@ -99,6 +132,8 @@ export function parseKind30311(event: NostrEvent): LiveStream | null {
     title,
     streamUrl,
     status,
+    starts: parseTimestamp(tagMap.get('starts')),
+    ends: parseTimestamp(tagMap.get('ends')),
     hostPubkey,
     viewerCount,
     image: tagMap.get('image') ?? '',

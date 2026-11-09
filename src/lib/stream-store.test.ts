@@ -3,7 +3,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { NostrEvent } from 'nostr-tools/core';
-import { parseKind30311, createStreamStore } from './stream-store';
+import { parseKind30311, streamPhase, isStaleLive, isWatchable, createStreamStore } from './stream-store';
 
 // ─── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -102,26 +102,58 @@ describe('parseKind30311', () => {
     expect(result2!.streamUrl).toBe('https://url.com/stream.m3u8');
   });
 
-  it('Test 5: returns null for event with status !== "live"', () => {
-    const offlineEvent = makeEvent({
-      tags: makeTags({
-        'd': 'id',
-        'title': 'Offline Stream',
-        'status': 'offline',
-        'streaming': 'https://example.com/live.m3u8',
-      }),
-    });
-    expect(parseKind30311(offlineEvent)).toBeNull();
+  it('Test 5: returns null for a status NIP-53 does not define', () => {
+    for (const status of ['offline', 'scheduled']) {
+      const event = makeEvent({
+        tags: makeTags({ 'd': 'id', 'title': 'Stream', status, 'streaming': 'https://example.com/live.m3u8' }),
+      });
+      expect(parseKind30311(event)).toBeNull();
+    }
+  });
 
-    const scheduledEvent = makeEvent({
+  it('Test 5b: keeps planned and ended streams', () => {
+    const planned = parseKind30311(makeEvent({
+      tags: makeTags({ 'd': 'id', 'status': 'planned', 'starts': '1700003600' }),
+    }));
+    expect(planned!.status).toBe('planned');
+    expect(planned!.starts).toBe(1700003600);
+
+    const ended = parseKind30311(makeEvent({
       tags: makeTags({
         'd': 'id',
-        'title': 'Scheduled Stream',
-        'status': 'scheduled',
-        'streaming': 'https://example.com/live.m3u8',
+        'status': 'ended',
+        'ends': '1700000100',
+        'streaming': 'https://example.com/gone.m3u8',
+        'recording': 'https://example.com/replay.mp4',
       }),
-    });
-    expect(parseKind30311(scheduledEvent)).toBeNull();
+    }));
+    expect(ended!.status).toBe('ended');
+    expect(ended!.ends).toBe(1700000100);
+    expect(ended!.streamUrl).toBe('https://example.com/replay.mp4');
+  });
+
+  it('Test 5c: an ended stream with no recording has nothing to play', () => {
+    const ended = parseKind30311(makeEvent({
+      tags: makeTags({ 'd': 'id', 'status': 'ended', 'streaming': 'https://example.com/gone.m3u8' }),
+    }))!;
+    expect(ended.streamUrl).toBe('');
+    expect(isWatchable(ended, ended.createdAt)).toBe(false);
+  });
+
+  it('Test 5d: only treats status=live as ended after an hour without an update', () => {
+    const live = parseKind30311(makeEvent())!;
+    expect(streamPhase(live, live.createdAt + 3600)).toBe('live');
+    expect(streamPhase(live, live.createdAt + 3601)).toBe('ended');
+    expect(isStaleLive(live, live.createdAt + 3601)).toBe(true);
+    expect(isWatchable(live, live.createdAt + 3601)).toBe(true);
+  });
+
+  it('Test 5e: a planned stream is upcoming and can not be watched yet', () => {
+    const planned = parseKind30311(makeEvent({
+      tags: makeTags({ 'd': 'id', 'status': 'planned', 'streaming': 'https://example.com/soon.m3u8' }),
+    }))!;
+    expect(streamPhase(planned, planned.createdAt)).toBe('upcoming');
+    expect(isWatchable(planned, planned.createdAt)).toBe(false);
   });
 
   it('Test 6: uses "d" tag as fallback title when "title" tag is missing', () => {
@@ -136,16 +168,24 @@ describe('parseKind30311', () => {
     expect(result!.title).toBe('my-stream-id');
   });
 
-  it('Test 9: streamAddr is the NIP-53 addressable coordinate "30311:<hostPubkey>:<d-tag>"', () => {
+  it('Test 9: streamAddr is the NIP-53 addressable coordinate "30311:<event author>:<d-tag>"', () => {
     // This is required for kind 1311 chat subscription '#a' filter.
     // The event id (hash) must NOT be used as streamAddr.
     const event = makeEvent();
     const result = parseKind30311(event);
     expect(result).not.toBeNull();
-    // hostPubkey comes from the p tag with role=host; d-tag is 'unique-stream-id'
     expect(result!.streamAddr).toBe('30311:host-pubkey-hex:unique-stream-id');
     // Confirm it is NOT the event id
     expect(result!.streamAddr).not.toBe(event.id);
+  });
+
+  it('Test 9b: a service publishing for a host keeps its own pubkey in streamAddr', () => {
+    const result = parseKind30311(makeEvent({
+      pubkey: 'service-pubkey-hex',
+      tags: makeTags({ 'd': 'show', 'status': 'live' }, [['p', 'host-pubkey-hex', '', 'Host']]),
+    }));
+    expect(result!.hostPubkey).toBe('host-pubkey-hex');
+    expect(result!.streamAddr).toBe('30311:service-pubkey-hex:show');
   });
 
   it('Test 10: streamAddr uses event.pubkey when no host p tag is present', () => {

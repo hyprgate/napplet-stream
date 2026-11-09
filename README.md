@@ -4,32 +4,25 @@
 > Do not push commits to this standalone napplet repository; direct changes are overwritten by Hyprgate's mirror workflow.
 <!-- HYPRGATE NAPPLET MIRROR NOTICE:END -->
 
-# napplet-stream
+# Stream
 
-[![CI](https://github.com/hyprgate/napplet-stream/actions/workflows/ci.yml/badge.svg)](https://github.com/hyprgate/napplet-stream/actions/workflows/ci.yml)
+Browses NIP-53 live activities (kind 30311): what's live now, what's coming up and what's
+ended, and plays them through the shell's player. Selecting a stream tells Live Chat which
+conversation to show.
 
-Forkable source repository for the Hyprgate built-in napplet currently packaged as `@hyprgate/napp-stream`.
+Package: `@hyprgate/napp-stream`. Source lives in the Hyprgate monorepo at `napplets/stream`.
+The standalone `hyprgate/napplet-stream` repository is a generated, read-only mirror, so send
+changes to `hyprgate/web`.
 
-This repository was split from `hyprgate/gui` and is mounted back into the parent checkout as `napplets/stream`.
-It still expects the parent workspace when built through Hyprgate because shared `@hyprgate/*` packages remain workspace dependencies.
+## How streams get sorted
 
-## Parent checkout
+- `planned` is **Upcoming** and can't be played yet.
+- `live` is **Live now**. A live event with no update for an hour goes under **Ended**, which
+  NIP-53 lets clients do, but it stays playable in case it's still going.
+- `ended` is **Ended**, and it's playable only if it has a `recording` tag.
 
-```bash
-git clone --recurse-submodules git@github.com:hyprgate/gui.git
-cd gui
-pnpm install --frozen-lockfile
-pnpm --filter @hyprgate/napp-stream build
-```
-
-## Paja runtime
-
-```bash
-pnpm --filter @hyprgate/napp-stream paja
-```
-
-This starts Kehto Paja and the napplet's Vite dev server together, using
-the port configured in `vite.config.ts`.
+Chat addresses use the event author's pubkey, as NIP-53 says, even when a `p` tag names a
+different host. The card shows the host.
 
 ## Runtime playback lifecycle
 
@@ -37,26 +30,22 @@ The shell owns playback. Selecting Radio in the same workspace releases the
 live-stream session and video pane before the radio starts. Streams observes
 the runtime subscription, clears its playing label and chat selection when
 playback stops, and requests a fresh session when the stream is selected again.
-Pausing keeps the selection and resumes the same session.
+Pausing keeps the selection and resumes the same session. If the player reports
+an error, the card says so and a click tries again.
 
 The shared playback adapter preserves NAP-MEDIA `stopped` as a stopped/idle
 state, not a generic deletion notification. Stream selection reset is app
 behavior; other consumers may retain and resume stopped sessions. Queued
 autoplay is reported as loading until the shell media element attaches.
 
-## Testing
+## Working on it
 
-Run these checks from a Hyprgate parent checkout so workspace dependencies resolve:
+Run these from the Hyprgate checkout so `workspace:*` packages resolve:
 
 ```bash
-git clone --recurse-submodules git@github.com:hyprgate/gui.git
-cd gui
 pnpm install --frozen-lockfile
-pnpm --filter @hyprgate/napp-stream conformance
-pnpm --filter @hyprgate/napp-stream test
-pnpm --filter @hyprgate/napp-stream build
+pnpm --filter ./napplets/stream paja        # Kehto Paja plus the Vite dev server
+pnpm --filter ./napplets/stream exec vitest run
+pnpm --filter ./napplets/stream type-check
+pnpm --filter ./napplets/stream conformance # builds, then checks dist/
 ```
-
-The `conformance` script builds the napplet and runs `@napplet/conformance-cli` against `dist/`. CI runs the same conformance, unit test, and build checks for every push and pull request.
-
-CI runs from the standalone napplet repository but checks out `hyprgate/gui` to resolve private `workspace:*` packages. Configure `HYPRGATE_GUI_CHECKOUT_TOKEN` with read access to `hyprgate/gui` before enabling GitHub Actions.
