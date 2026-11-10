@@ -5,3 +5,6 @@ export * from './protocol.js';
 export * from './napp-spec.js';
 export * from './sandbox.js';
 export * from './feed-intent.js';
+export * from './agent-diagnostics.js';
+export * from './agent-pairing.js';
+export * from './agent-control.js';

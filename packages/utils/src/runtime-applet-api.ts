@@ -17,6 +17,7 @@ import {
   RuntimeControlClient,
   RuntimeControlClientError,
   type RuntimeControlInvocationHandle,
+  type RuntimeControlInvokeOptions,
   type RuntimeControlRegistrySubscription,
 } from './runtime-control-client.js';
 
@@ -34,8 +35,13 @@ export interface RuntimeAppletPublishOptions {
   relays?: string[];
 }
 
+/** A stream the shell or client refused or failed; the subscription never delivers events. */
+export type RuntimeAppletStreamErrorHandler = (error: Error) => void;
+
 export interface RuntimeAppletSubscribeOptions {
   relays?: string[];
+  /** Called once if the stream could not be opened or the shell failed it. */
+  onError?: RuntimeAppletStreamErrorHandler;
 }
 
 /**
@@ -48,6 +54,8 @@ export interface RuntimeAppletOutboxSubscribeOptions {
   authors?: string[];
   /** Relay hints the shell attaches immediately alongside its policy relays. */
   relays?: string[];
+  /** Called once if the stream could not be opened or the shell failed it. */
+  onError?: RuntimeAppletStreamErrorHandler;
 }
 
 export interface RuntimeAppletOutbox {
@@ -126,7 +134,7 @@ export interface RuntimeAppletControls {
   describe(operationId: string): Promise<ControlDescribedOperation | null>;
   resolve(request: ControlResolveRequest): Promise<ControlResolvedOperation | null>;
   complete(request: ControlCompletionRequest): Promise<ControlCompletionResult>;
-  invoke(request: ControlInvocationRequest): Promise<RuntimeControlInvocationHandle>;
+  invoke(request: ControlInvocationRequest, options?: RuntimeControlInvokeOptions): Promise<RuntimeControlInvocationHandle>;
   getInvocation(invocationId: string): Promise<ControlInvocationSnapshot | null>;
   cancel(invocationId: string): Promise<boolean>;
   subscribeRegistry(
@@ -270,12 +278,52 @@ interface ControlStreamOptions {
   onEvent: (result: RuntimeAppletRelayResult) => void;
   onProgressMessage?: (message: string | undefined) => void;
   onResult?: (snapshot: ControlInvocationSnapshot) => void;
+  onError?: RuntimeAppletStreamErrorHandler;
+}
+
+/**
+ * Stream handshakes (describe + invoke) in flight at once. A burst of new
+ * subscriptions queues here instead of overrunning the client's and the
+ * shell bridge's bounded pending-request sets.
+ */
+const STREAM_HANDSHAKE_CONCURRENCY = 8;
+let streamHandshakesInFlight = 0;
+const streamHandshakeQueue: Array<() => void> = [];
+
+function streamHandshakeRelease(): () => void {
+  streamHandshakesInFlight += 1;
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    streamHandshakesInFlight -= 1;
+    streamHandshakeQueue.shift()?.();
+  };
+}
+
+/** Synchronous when a slot is free, so an idle rail starts the handshake in the same turn. */
+function tryStreamHandshakeSlot(): (() => void) | undefined {
+  return streamHandshakesInFlight < STREAM_HANDSHAKE_CONCURRENCY ? streamHandshakeRelease() : undefined;
+}
+
+function queuedStreamHandshakeSlot(): Promise<() => void> {
+  return new Promise((resolve) => { streamHandshakeQueue.push(() => resolve(streamHandshakeRelease())); });
+}
+
+function reportStreamError(stream: ControlStreamOptions, error: Error): void {
+  if (stream.onError) {
+    try { stream.onError(error); } catch { /* observers cannot break the stream rail */ }
+    return;
+  }
+  console.warn(`[runtime-applet] ${stream.operationId} stream refused: ${error.message}`);
 }
 
 /**
  * Open a cancellable shell control stream and reassemble its chunked relay
  * records. Records arrive as ordered JSON chunks; the stream stays open until
- * the caller closes it or the shell finishes the invocation.
+ * the caller closes it or the shell finishes the invocation. Streams draw on
+ * the client's stream budget, never the one-shot command budget, and a refused
+ * or failed stream is reported rather than dropped.
  */
 function subscribeControlStream(stream: ControlStreamOptions): RuntimeAppletSubscription {
   let closed = false;
@@ -284,13 +332,20 @@ function subscribeControlStream(stream: ControlStreamOptions): RuntimeAppletSubs
   const chunks = new Map<string, string[]>();
   const client = controls();
   void (async () => {
-    const described = await client.describe(stream.operationId);
-    if (!described || closed) return;
-    invocation = await client.invoke({
-      operationId: stream.operationId,
-      arguments: stream.arguments as ControlInvocationRequest['arguments'],
-      expectedRegistrationRevision: described.registrationRevision,
-    });
+    const release = tryStreamHandshakeSlot() ?? await queuedStreamHandshakeSlot();
+    try {
+      if (closed) return;
+      const described = await client.describe(stream.operationId);
+      if (closed) return;
+      if (!described) throw new RuntimeAppletCommandError(stream.operationId, 'unknown_operation', 'failed');
+      invocation = await client.invoke({
+        operationId: stream.operationId,
+        arguments: stream.arguments as ControlInvocationRequest['arguments'],
+        expectedRegistrationRevision: described.registrationRevision,
+      }, { stream: true });
+    } finally {
+      release();
+    }
     if (closed) {
       await invocation.cancel();
       return;
@@ -303,9 +358,17 @@ function subscribeControlStream(stream: ControlStreamOptions): RuntimeAppletSubs
       else stream.onProgressMessage?.(controlEvent.message);
     });
     void invocation.result.then((snapshot) => {
-      if (!closed) stream.onResult?.(snapshot);
+      if (closed) return;
+      if (snapshot.status === 'failed' || snapshot.status === 'unavailable') {
+        reportStreamError(stream, relayControlError(stream.operationId, snapshot));
+        return;
+      }
+      stream.onResult?.(snapshot);
     }).catch(() => undefined);
-  })().catch(() => undefined);
+  })().catch((error: unknown) => {
+    if (closed) return;
+    reportStreamError(stream, error instanceof Error ? error : new Error(String(error)));
+  });
   return { close: () => {
     if (closed) return;
     closed = true;
@@ -332,6 +395,7 @@ export const runtimeOutbox: RuntimeAppletOutbox = {
         ...(Object.keys(routing).length > 0 ? { options: routing } : {}),
       },
       onEvent,
+      ...(options?.onError ? { onError: options.onError } : {}),
       onResult: (snapshot) => {
         const value = snapshot.value as { status?: unknown; reason?: unknown } | undefined;
         if (snapshot.status !== 'succeeded' || value?.status !== 'closed') return;
@@ -347,6 +411,7 @@ export const runtimeRelay: RuntimeAppletRelay = {
       operationId: 'relay.runtime.subscribe',
       arguments: { filters: normalizeFilters(filters) as unknown as ControlJsonValue, ...(options?.relays ? { relays: options.relays } : {}) },
       onEvent,
+      ...(options?.onError ? { onError: options.onError } : {}),
       onProgressMessage: (message) => { if (message === 'Runtime relay EOSE') onEose?.(); },
     });
   },
@@ -412,7 +477,7 @@ export const runtimeControls: RuntimeAppletControls = {
   describe: operationId => controls().describe(operationId),
   resolve: request => controls().resolve(request),
   complete: request => controls().complete(request),
-  invoke: request => controls().invoke(request),
+  invoke: (request, options) => controls().invoke(request, options),
   getInvocation: invocationId => controls().getInvocation(invocationId),
   cancel: invocationId => controls().cancel(invocationId),
   subscribeRegistry: listener => controls().subscribeRegistry(listener),

@@ -26,6 +26,13 @@ export interface Nip5dMediaDeclaration {
   alt?: string;
   duration?: number;
   servers: string[];
+  /**
+   * Require the fetched bytes to match the declared `size` and the decoded
+   * image to match the declared `dim` exactly. Used for third-party
+   * declarations (for example signed screenshot labels) where the declaration
+   * is not the app author's own manifest.
+   */
+  exactDeclaration?: boolean;
 }
 
 export interface Nip5dPresentationMedia {
@@ -95,7 +102,8 @@ const cache = new Map<string, Promise<string | null>>();
  * other media or app discovery.
  */
 export function verifiedAppMedia(media: Nip5dMediaDeclaration): Promise<string | null> {
-  const key = `${media.kind}:${media.hash}:${media.mimeType ?? ''}:${media.servers.join(',')}`;
+  const exact = media.exactDeclaration ? `:exact:${media.size ?? ''}:${media.width ?? ''}x${media.height ?? ''}` : '';
+  const key = `${media.kind}:${media.hash}:${media.mimeType ?? ''}:${media.servers.join(',')}${exact}`;
   const cached = cache.get(key);
   if (cached) return cached;
   const result = fetchVerifiedMedia(media);
@@ -106,21 +114,36 @@ export function verifiedAppMedia(media: Nip5dMediaDeclaration): Promise<string |
 
 async function fetchVerifiedMedia(media: Nip5dMediaDeclaration): Promise<string | null> {
   const video = media.kind === 'preview';
+  const limit = video ? MAX_PREVIEW_BYTES : MAX_SCREENSHOT_BYTES;
+  if (media.exactDeclaration && (video || !media.size || !media.width || !media.height || media.size > limit)) return null;
   const blob = await fetchVerifiedBlossomBlob({
     hash: media.hash,
     servers: media.servers,
     ...(media.mimeType ? { mimeType: media.mimeType } : {}),
     accept: video ? VERIFIED_VIDEO_FORMATS : VERIFIED_IMAGE_FORMATS,
-    maxBytes: video ? MAX_PREVIEW_BYTES : MAX_SCREENSHOT_BYTES,
+    maxBytes: media.exactDeclaration ? media.size! : limit,
   });
   if (!blob || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return null;
+  if (media.exactDeclaration && blob.bytes.byteLength !== media.size) return null;
   const buffer = new ArrayBuffer(blob.bytes.byteLength);
   new Uint8Array(buffer).set(blob.bytes);
   const url = URL.createObjectURL(new Blob([buffer], { type: blob.format }));
-  const decodes = video ? await decodesVideo(url) : await decodesImage(url);
+  const decodes = video ? await decodesVideo(url)
+    : media.exactDeclaration ? await decodesImageAt(url, media.width!, media.height!)
+    : await decodesImage(url);
   if (decodes) return url;
   URL.revokeObjectURL(url);
   return null;
+}
+
+function decodesImageAt(url: string, width: number, height: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    if (typeof Image === 'undefined') { resolve(false); return; }
+    const image = new Image();
+    image.onload = () => resolve(image.naturalWidth === width && image.naturalHeight === height);
+    image.onerror = () => resolve(false);
+    image.src = url;
+  });
 }
 
 function decodesVideo(url: string): Promise<boolean> {

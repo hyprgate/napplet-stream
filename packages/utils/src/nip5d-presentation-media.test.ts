@@ -1,6 +1,6 @@
-import { describe, expect, it } from 'vitest';
-import { parseNip5dPresentationMedia } from './nip5d-presentation-media.js';
-import { sniffBlobFormat } from './verified-blossom-blob.js';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import { parseNip5dPresentationMedia, verifiedAppMedia, type Nip5dMediaDeclaration } from './nip5d-presentation-media.js';
+import { fetchVerifiedBlossomBlob, sha256Hex, sniffBlobFormat } from './verified-blossom-blob.js';
 
 const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
@@ -59,5 +59,70 @@ describe('sniffBlobFormat', () => {
     expect(sniffBlobFormat(new Uint8Array([0x1a, 0x45, 0xdf, 0xa3, 0]))).toBe('video/webm');
     expect(sniffBlobFormat(new Uint8Array([0, 0, 0, 24, ...[...'ftypisom'].map((c) => c.charCodeAt(0))]))).toBe('video/mp4');
     expect(sniffBlobFormat(new Uint8Array([60, 115, 118, 103]))).toBeNull();
+  });
+});
+
+describe('verifiedAppMedia exact declarations', () => {
+  // 1x1 PNG; the decoded size is stubbed per test so dimension checks are explicit.
+  const realPng = Uint8Array.from(atob('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=='), (char) => char.charCodeAt(0));
+  let REAL_HASH = '';
+  beforeAll(async () => { REAL_HASH = await sha256Hex(realPng); });
+  const exact = (overrides: Partial<Nip5dMediaDeclaration> = {}): Nip5dMediaDeclaration => ({
+    kind: 'screenshot', hash: REAL_HASH, mimeType: 'image/png', width: 1200, height: 750, size: realPng.byteLength,
+    servers: ['https://bad.example', 'https://good.example'], exactDeclaration: true, ...overrides,
+  });
+  let decodedSize = { width: 1200, height: 750 };
+  let requests: string[] = [];
+
+  beforeEach(() => {
+    requests = [];
+    decodedSize = { width: 1200, height: 750 };
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: RequestInit) => {
+      requests.push(url);
+      if (url.startsWith('https://bad.example/')) return new Response(new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0]), { status: 200 });
+      if (url.startsWith('https://slow.example/')) {
+        return new Promise<Response>((_resolve, reject) => init?.signal?.addEventListener('abort', () => reject(new DOMException('aborted', 'AbortError'))));
+      }
+      return new Response(realPng.slice(), { status: 200, headers: { 'content-type': 'text/plain' } });
+    }));
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn(() => `blob:test-${requests.length}`) });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() });
+    vi.stubGlobal('Image', class {
+      naturalWidth = 0; naturalHeight = 0; onload?: () => void; onerror?: () => void;
+      set src(_value: string) { this.naturalWidth = decodedSize.width; this.naturalHeight = decodedSize.height; queueMicrotask(() => this.onload?.()); }
+    });
+  });
+
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it('falls back from a wrong-bytes mirror to a correct one and ignores the response MIME header', async () => {
+    await expect(verifiedAppMedia(exact({ alt: 'mirror-fallback' }))).resolves.toMatch(/^blob:/);
+    expect(requests).toEqual([`https://bad.example/${REAL_HASH}`, `https://good.example/${REAL_HASH}`]);
+  });
+
+  it('leaves the placeholder when every mirror fails', async () => {
+    await expect(verifiedAppMedia(exact({ servers: ['https://bad.example'], size: realPng.byteLength + 0 }))).resolves.toBeNull();
+  });
+
+  it('rejects bytes whose decoded dimensions differ from the declaration', async () => {
+    decodedSize = { width: 800, height: 600 };
+    await expect(verifiedAppMedia(exact({ servers: ['https://good.example'], width: 1200, height: 750, alt: 'dims' } as never))).resolves.toBeNull();
+  });
+
+  it('rejects a declared size that does not match the bytes before decoding', async () => {
+    await expect(verifiedAppMedia(exact({ servers: ['https://good.example'], size: realPng.byteLength - 1 }))).resolves.toBeNull();
+    await expect(verifiedAppMedia(exact({ servers: ['https://good.example'], size: realPng.byteLength + 1 }))).resolves.toBeNull();
+  });
+
+  it('refuses exact declarations without size and dimensions', async () => {
+    await expect(verifiedAppMedia(exact({ servers: ['https://good.example'], size: undefined }))).resolves.toBeNull();
+    expect(requests).toEqual([]);
+  });
+
+  it('times out a stalled mirror and continues to the next', async () => {
+    await expect(fetchVerifiedBlossomBlob({
+      hash: REAL_HASH, servers: ['https://slow.example', 'https://good.example'], accept: ['image/png'], maxBytes: 1_000_000, timeoutMs: 20,
+    })).resolves.toMatchObject({ format: 'image/png' });
+    expect(requests).toEqual([`https://slow.example/${REAL_HASH}`, `https://good.example/${REAL_HASH}`]);
   });
 });

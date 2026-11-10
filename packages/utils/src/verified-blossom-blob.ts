@@ -20,7 +20,11 @@ export interface VerifiedBlobRequest {
   /** Formats the caller can render; the sniffed format must be one of these. */
   accept: readonly VerifiedBlobFormat[];
   maxBytes: number;
+  /** Per-server deadline covering the request and the body read. */
+  timeoutMs?: number;
 }
+
+const DEFAULT_BLOB_TIMEOUT_MS = 20_000;
 
 export interface VerifiedBlob {
   bytes: Uint8Array;
@@ -54,9 +58,11 @@ export async function fetchVerifiedBlossomBlob(request: VerifiedBlobRequest): Pr
   if (request.mimeType && !request.accept.includes(request.mimeType as VerifiedBlobFormat)) return null;
   for (const server of request.servers) {
     if (!isValidBlossomOrigin(server)) continue;
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), request.timeoutMs ?? DEFAULT_BLOB_TIMEOUT_MS);
     try {
       const response = await fetch(`${server.replace(/\/$/, '')}/${request.hash}`, {
-        credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer',
+        credentials: 'omit', redirect: 'error', referrerPolicy: 'no-referrer', signal: controller.signal,
       });
       if (!response.ok || Number(response.headers.get('content-length') ?? 0) > request.maxBytes) continue;
       const bytes = await readBoundedBytes(response, request.maxBytes);
@@ -66,7 +72,7 @@ export async function fetchVerifiedBlossomBlob(request: VerifiedBlobRequest): Pr
       if (request.mimeType && request.mimeType !== format) continue;
       if (await sha256Hex(bytes) !== request.hash) continue;
       return { bytes, format };
-    } catch { /* Try the next declared server. */ }
+    } catch { /* Try the next declared server. */ } finally { clearTimeout(timer); }
   }
   return null;
 }

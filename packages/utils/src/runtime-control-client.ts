@@ -38,7 +38,13 @@ export interface RuntimeControlClientOptions {
   origin?: string;
   maxPending?: number;
   maxSubscriptions?: number;
+  /** Active one-shot invocations (commands, queries, publishes). */
   maxInvocations?: number;
+  /**
+   * Active long-lived streams opened with `{ stream: true }`. Streams run until
+   * closed, so they get their own budget and can never starve one-shot commands.
+   */
+  maxStreams?: number;
   maxCompletedInvocations?: number;
   maxCompletedRequestIds?: number;
   maxBufferedEvents?: number;
@@ -48,6 +54,11 @@ export interface RuntimeControlClientOptions {
 export interface RuntimeControlRegistrySubscription {
   readonly id: string;
   unsubscribe(): Promise<void>;
+}
+
+export interface RuntimeControlInvokeOptions {
+  /** The invocation stays open until cancelled (a relay or outbox subscription). */
+  stream?: boolean;
 }
 
 export interface RuntimeControlInvocationHandle {
@@ -69,6 +80,7 @@ interface InvocationState {
   resolve: (snapshot: ControlInvocationSnapshot) => void;
   reject: (error: RuntimeControlClientError) => void;
   cancellable: boolean;
+  stream: boolean;
   listeners: Set<(event: ControlInvocationEvent) => void>;
   history: ControlInvocationEvent[];
   lastSequence: number;
@@ -100,6 +112,7 @@ export class RuntimeControlClient {
   private readonly maxPending: number;
   private readonly maxSubscriptions: number;
   private readonly maxInvocations: number;
+  private readonly maxStreams: number;
   private readonly maxCompletedInvocations: number;
   private readonly maxCompletedRequestIds: number;
   private readonly maxBufferedEvents: number;
@@ -112,6 +125,7 @@ export class RuntimeControlClient {
   private settledInvocationOrder: Array<{ id: string; state: InvocationState }> = [];
   private bufferedEvents: RuntimeControlEvent[] = [];
   private pendingInvocationReservations = 0;
+  private pendingStreamReservations = 0;
   private pendingSubscriptionReservations = 0;
   private requestGeneration = 0;
   private closed = false;
@@ -141,6 +155,7 @@ export class RuntimeControlClient {
     this.maxPending = Math.max(1, options.maxPending ?? 64);
     this.maxSubscriptions = Math.max(0, options.maxSubscriptions ?? 16);
     this.maxInvocations = Math.max(1, options.maxInvocations ?? 64);
+    this.maxStreams = Math.max(1, options.maxStreams ?? 256);
     this.maxCompletedInvocations = Math.max(0, options.maxCompletedInvocations ?? 32);
     this.maxCompletedRequestIds = Math.max(0, options.maxCompletedRequestIds ?? 256);
     this.maxBufferedEvents = Math.max(1, options.maxBufferedEvents ?? 128);
@@ -172,16 +187,26 @@ export class RuntimeControlClient {
     return this.request('cancel', { invocationId }).then(result => result.cancelled);
   }
 
-  async invoke(request: ControlInvocationRequest): Promise<RuntimeControlInvocationHandle> {
-    if (this.activeInvocationCount() + this.pendingInvocationReservations >= this.maxInvocations) {
-      throw new RuntimeControlClientError('too_many_pending', 'Too many active control invocations');
+  async invoke(
+    request: ControlInvocationRequest,
+    options: RuntimeControlInvokeOptions = {},
+  ): Promise<RuntimeControlInvocationHandle> {
+    const stream = options.stream === true;
+    if (stream
+      ? this.activeInvocationCount(true) + this.pendingStreamReservations >= this.maxStreams
+      : this.activeInvocationCount(false) + this.pendingInvocationReservations >= this.maxInvocations) {
+      throw new RuntimeControlClientError('too_many_pending', stream
+        ? 'Too many open control streams'
+        : 'Too many active control invocations');
     }
-    this.pendingInvocationReservations += 1;
+    if (stream) this.pendingStreamReservations += 1;
+    else this.pendingInvocationReservations += 1;
     let response: RuntimeControlMethodMap['invoke']['response'];
     try {
       response = await this.request('invoke', request);
     } finally {
-      this.pendingInvocationReservations = Math.max(0, this.pendingInvocationReservations - 1);
+      if (stream) this.pendingStreamReservations = Math.max(0, this.pendingStreamReservations - 1);
+      else this.pendingInvocationReservations = Math.max(0, this.pendingInvocationReservations - 1);
     }
     if (this.closed) throw new RuntimeControlClientError('disconnected', 'Runtime control client is closed');
     if (this.invocations.has(response.invocationId)) {
@@ -197,6 +222,7 @@ export class RuntimeControlClient {
       resolve: resolveResult,
       reject: rejectResult,
       cancellable: response.cancellable,
+      stream,
       listeners: new Set(),
       history: [],
       lastSequence: -1,
@@ -286,6 +312,7 @@ export class RuntimeControlClient {
     this.registrySubscriptions.clear();
     this.bufferedEvents = [];
     this.pendingInvocationReservations = 0;
+    this.pendingStreamReservations = 0;
     this.pendingSubscriptionReservations = 0;
     this.completedRequestIds.clear();
     this.completedRequestOrder = [];
@@ -390,7 +417,7 @@ export class RuntimeControlClient {
 
     const invocation = this.invocations.get(message.invocationId);
     if (!invocation) {
-      if (this.pendingInvocationReservations > 0) this.bufferEvent(message);
+      if (this.pendingInvocationReservations + this.pendingStreamReservations > 0) this.bufferEvent(message);
       return;
     }
     if (message.event === 'invocation') {
@@ -467,10 +494,10 @@ export class RuntimeControlClient {
     return state.unsubscribePromise;
   }
 
-  private activeInvocationCount(): number {
+  private activeInvocationCount(stream: boolean): number {
     let count = 0;
     for (const invocation of this.invocations.values()) {
-      if (!invocation.settled) count += 1;
+      if (!invocation.settled && invocation.stream === stream) count += 1;
     }
     return count;
   }

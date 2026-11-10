@@ -7,6 +7,26 @@
     ".": {
       "types": "./src/index.ts",
       "default": "./src/index.ts"
+    },
+    "./agent-diagnostics": {
+      "types": "./src/agent-diagnostics.ts",
+      "default": "./src/agent-diagnostics.ts"
+    },
+    "./agent-pairing": {
+      "types": "./src/agent-pairing.ts",
+      "default": "./src/agent-pairing.ts"
+    },
+    "./agent-console": {
+      "types": "./src/agent-console.ts",
+      "default": "./src/agent-console.ts"
+    },
+    "./agent-control": {
+      "types": "./src/agent-control.ts",
+      "default": "./src/agent-control.ts"
+    },
+    "./napplet-templates": {
+      "types": "./src/napplet-templates.ts",
+      "default": "./src/napplet-templates.ts"
     }
   },
   "scripts": {
@@ -14,8 +34,8 @@
     "type-check": "tsc --noEmit"
   },
   "dependencies": {
-    "@kehto/acl": "0.19.1",
-    "@napplet/core": "0.34.0"
+    "@kehto/acl": "0.20.1",
+    "@napplet/core": "0.35.0"
   },
   "devDependencies": {
     "typescript": "^5.9.3",
